@@ -1,0 +1,113 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags: []
+
+linters:
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - misspell
+  disable:
+    - errcheck
+    - unused
+
+  settings:
+    errcheck:
+      check-blank: false
+      check-type-assertions: false
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*github.com/spf13/afero.Fs).RemoveAll
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    misspell:
+      locale: US
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - elseif
+
+    gosec:
+      excludes:
+        - G404 # Use of weak random number generator
+        - G306 # File permissions
+
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+        - name: var-naming
+          disabled: true
+
+  exclusions:
+    rules:
+      # Exclude some linters from running on tests files
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+      # Ignore long lines in generated code
+      - path: ".*\\.pb\\.go"
+        linters:
+          - lll
+
+      # Exclude unused warnings for test helpers and context variables
+      - linters:
+          - unused
+        text: "(rootContext|cancelFunc|parseStatements)"
+
+      # Ignore elseif suggestions from gocritic
+      - text: "elseif: can replace"
+        linters:
+          - gocritic
+
+      # Ignore unchecked errors on defer Close
+      - text: "Error return value of.*Close.* is not checked"
+        linters:
+          - errcheck
+
+      # Ignore unchecked errors on cleanup functions
+      - text: "Error return value of.*Remove.* is not checked"
+        linters:
+          - errcheck
+      - text: "Error return value of.*Scanln.* is not checked"
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    gofmt:
+      simplify: true
+
+    goimports:
+      local-prefixes:
+        - github.com/pjtatlow/scurry
+
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true
