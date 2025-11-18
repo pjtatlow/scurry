@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"sync"
 
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
@@ -66,6 +67,28 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		if CrdbVersion != "" {
 			opts = append(opts, testserver.CustomVersionOpt(CrdbVersion))
 		}
+
+		// Parse COCKROACH_ENV variable if set
+		if cockroachEnv := os.Getenv("COCKROACH_ENV"); cockroachEnv != "" {
+			// Parse as query parameters
+			values, err := url.ParseQuery(cockroachEnv)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse COCKROACH_ENV: %w", err)
+			}
+
+			// Convert to slice of "key=value" strings
+			envVars := make([]string, 0)
+			for key, vals := range values {
+				for _, val := range vals {
+					envVars = append(envVars, fmt.Sprintf("%s=%s", key, val))
+				}
+			}
+
+			if len(envVars) > 0 {
+				opts = append(opts, testserver.EnvVarOpt(envVars))
+			}
+		}
+
 		ts, err := testserver.NewTestServer(opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create test server: %w", err)
