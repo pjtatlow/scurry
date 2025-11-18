@@ -55,14 +55,21 @@ jobs:
           fi
           go build -v -ldflags="-s -w -X github.com/pjtatlow/scurry/cmd.Version=${{ github.event.release.tag_name }}" -o "scurry${EXT}" .
 
+          # Determine sha256 command based on runner OS
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            SHA256="shasum -a 256"
+          else
+            SHA256="sha256sum"
+          fi
+
           # Create archive
           ARCHIVE_NAME="scurry-${{ matrix.goos }}-${{ matrix.goarch }}"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip "${ARCHIVE_NAME}.zip" "scurry${EXT}"
-            sha256sum "${ARCHIVE_NAME}.zip" > "${ARCHIVE_NAME}.zip.sha256"
+            $SHA256 "${ARCHIVE_NAME}.zip" > "${ARCHIVE_NAME}.zip.sha256"
           else
             tar czf "${ARCHIVE_NAME}.tar.gz" "scurry${EXT}"
-            sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+            $SHA256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
           fi
 
       - name: Upload to release
