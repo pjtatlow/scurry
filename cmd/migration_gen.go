@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -53,7 +54,7 @@ func doMigrationGen(ctx context.Context) error {
 	}
 
 	// 1. Load local schema from schema-dir
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
 	}
 
@@ -68,13 +69,13 @@ func doMigrationGen(ctx context.Context) error {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
 			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
 	}
 
 	// 2. Load production schema from schema.sql
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading production schema from %s...", getSchemaFilePath())))
 	}
 
@@ -83,13 +84,13 @@ func doMigrationGen(ctx context.Context) error {
 		return fmt.Errorf("failed to load production schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in production",
 			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views))))
 	}
 
 	// 3. Compare schemas
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Comparing schemas..."))
 	}
@@ -104,7 +105,7 @@ func doMigrationGen(ctx context.Context) error {
 	}
 
 	// Show differences
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Header("\nDifferences found:"))
 		fmt.Println(diffResult.Summary())
 	}
@@ -120,7 +121,7 @@ func doMigrationGen(ctx context.Context) error {
 		return fmt.Errorf("failed to apply migrations to schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s):", len(statements))))
 		for i, stmt := range statements {
@@ -152,7 +153,7 @@ func doMigrationGen(ctx context.Context) error {
 	}
 
 	// Create migration directory and file
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
@@ -165,7 +166,7 @@ func doMigrationGen(ctx context.Context) error {
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Created migration: %s", migrationDirName)))
 
 	// 6. Apply migrations to production schema
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Updating production schema..."))
 	}
 

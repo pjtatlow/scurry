@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -44,7 +45,7 @@ func validate(cmd *cobra.Command, args []string) error {
 func doValidate(ctx context.Context) error {
 
 	// Load local schema from files
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
 	}
 
@@ -59,7 +60,7 @@ func doValidate(ctx context.Context) error {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
 			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
 	}

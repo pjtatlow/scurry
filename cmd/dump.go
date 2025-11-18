@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -73,7 +74,7 @@ func doDump(ctx context.Context, outputFile string) error {
 	}
 
 	// Connect to database
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Connecting to database..."))
 	}
 
@@ -84,7 +85,7 @@ func doDump(ctx context.Context, outputFile string) error {
 	defer client.Close()
 
 	// Load schema from database
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Loading database schema..."))
 	}
 
@@ -93,13 +94,13 @@ func doDump(ctx context.Context, outputFile string) error {
 		return fmt.Errorf("failed to load database schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in database",
 			len(dbSchema.Tables), len(dbSchema.Types), len(dbSchema.Routines), len(dbSchema.Sequences), len(dbSchema.Views))))
 	}
 
 	// Generate CREATE statements
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Generating CREATE statements..."))
 	}
 
@@ -115,7 +116,7 @@ func doDump(ctx context.Context, outputFile string) error {
 		return fmt.Errorf("failed to write output file: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Success(fmt.Sprintf("✓ Successfully dumped schema to %s", outputFile)))
 	} else {

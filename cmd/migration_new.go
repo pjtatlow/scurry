@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -47,7 +48,7 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	// Load production schema from schema.sql
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading production schema from %s...", getSchemaFilePath())))
 	}
 
@@ -56,7 +57,7 @@ func doMigrationNew(ctx context.Context) error {
 		return fmt.Errorf("failed to load production schema: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in production",
 			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views))))
 		fmt.Println()
@@ -118,7 +119,7 @@ func doMigrationNew(ctx context.Context) error {
 		statementStrings = append(statementStrings, stmt.String())
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Header(fmt.Sprintf("Parsed %d statement(s):", len(statementStrings))))
 		for i, stmt := range statementStrings {
@@ -127,7 +128,7 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	// Create migration directory and file
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
@@ -139,7 +140,7 @@ func doMigrationNew(ctx context.Context) error {
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Created migration: %s", migrationDirName)))
 
 	// Apply migrations to production schema
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Updating production schema..."))
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -51,12 +52,12 @@ func runTestserver(cmd *cobra.Command, args []string) error {
 
 func doTestserver(ctx context.Context, urlFile string) error {
 	// Start test server
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Starting CRDB test server..."))
 	}
 
 	// Load local schema
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
 	}
 
@@ -74,7 +75,7 @@ func doTestserver(ctx context.Context, urlFile string) error {
 	}
 
 	// Write URL to file
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Writing database URL to %s...", urlFile)))
 	}
 
@@ -83,7 +84,7 @@ func doTestserver(ctx context.Context, urlFile string) error {
 		return fmt.Errorf("failed to write URL file: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Success(fmt.Sprintf("✓ Database URL written to %s", urlFile)))
 	}
 
@@ -99,14 +100,14 @@ func doTestserver(ctx context.Context, urlFile string) error {
 	<-ctx.Done()
 
 	fmt.Println()
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Stopping test server..."))
 	}
 
 	// Clean up URL file
 	os.Remove(urlFile)
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Success("✓ Test server stopped"))
 	}
 

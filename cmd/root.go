@@ -1,28 +1,22 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 )
 
 var (
-	// Global flags
-	verbose bool
-
 	// Shared command flags
 	dbURL     string
 	schemaDir string
-
-	logOutput bytes.Buffer
 
 	// Global context for signal handling
 	rootContext context.Context
@@ -49,7 +43,7 @@ func Execute() error {
 	// Start goroutine to handle signals
 	go func() {
 		<-sigChan
-		if verbose {
+		if flags.Verbose {
 			fmt.Fprintln(os.Stderr, "\nReceived interrupt signal, canceling...")
 		}
 		// Stop shared test server on interrupt
@@ -69,8 +63,5 @@ func Execute() error {
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&db.CrdbVersion, "crdb-version", os.Getenv("CRDB_VERSION"), "CockroachDB version, defaults to latest.")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
-
-	// Hide log output from cockroachdb testserver package
-	log.SetOutput(&logOutput)
+	rootCmd.PersistentFlags().BoolVarP(&flags.Verbose, "verbose", "v", false, "Enable verbose output")
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -81,7 +82,7 @@ func doPush(ctx context.Context) error {
 		Fs:        afero.NewOsFs(),
 		SchemaDir: schemaDir,
 		DbClient:  client,
-		Verbose:   verbose,
+		Verbose:   flags.Verbose,
 		DryRun:    pushDryRun,
 		Force:     pushForce,
 	}

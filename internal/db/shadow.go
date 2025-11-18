@@ -1,13 +1,16 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"sync"
 
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/util/uuid"
+	"github.com/pjtatlow/scurry/flags"
 )
 
 var (
@@ -17,6 +20,8 @@ var (
 	shadowServerURL *url.URL
 
 	CrdbVersion string
+
+	logOutput bytes.Buffer
 )
 
 // GetShadowDB creates an ephemeral database server.
@@ -51,6 +56,12 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 	// Create test server if it doesn't exist
 	if sharedDbServer == nil {
 		// Ensure crdbVersion is set
+		//
+		// // Hide log output from cockroachdb testserver package
+		if !flags.Verbose {
+			log.SetOutput(&logOutput)
+		}
+
 		opts := make([]testserver.TestServerOpt, 0)
 		if CrdbVersion != "" {
 			opts = append(opts, testserver.CustomVersionOpt(CrdbVersion))

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
@@ -59,7 +60,7 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	// 1. Load all migration files in order
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Loading migrations..."))
 	}
 
@@ -68,28 +69,28 @@ func doMigrationValidate(ctx context.Context) error {
 		return fmt.Errorf("failed to load migrations: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d migration(s)", len(migrations))))
 	}
 
 	// 2. Apply migrations to empty shadow database
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Applying migrations to clean database..."))
 	}
 
-	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, verbose)
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, flags.Verbose)
 	if err != nil {
 		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Result: %d tables, %d types, %d routines, %d sequences, %d views",
 			len(resultSchema.Tables), len(resultSchema.Types), len(resultSchema.Routines), len(resultSchema.Sequences), len(resultSchema.Views))))
 	}
 
 	// 3. Handle overwrite flag
 	if validateOverwrite {
-		if verbose {
+		if flags.Verbose {
 			fmt.Println(ui.Subtle("→ Overwriting schema.sql..."))
 		}
 
@@ -104,7 +105,7 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	// 4. Load expected schema from schema.sql
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading expected schema from %s...", getSchemaFilePath())))
 	}
 
@@ -113,13 +114,13 @@ func doMigrationValidate(ctx context.Context) error {
 		return fmt.Errorf("failed to load schema.sql: %w", err)
 	}
 
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Expected: %d tables, %d types, %d routines, %d sequences, %d views",
 			len(expectedSchema.Tables), len(expectedSchema.Types), len(expectedSchema.Routines), len(expectedSchema.Sequences), len(expectedSchema.Views))))
 	}
 
 	// 5. Compare schemas
-	if verbose {
+	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Comparing schemas..."))
 	}
@@ -152,7 +153,7 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	// User chose to overwrite
-	if verbose {
+	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Overwriting schema.sql..."))
 	}
 
