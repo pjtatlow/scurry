@@ -22,7 +22,7 @@ jobs:
             runs-on: ubuntu-latest
           - goos: darwin
             goarch: amd64
-            runs-on: macos-13
+            runs-on: macos-15-intel
           - goos: darwin
             goarch: arm64
             runs-on: macos-latest
