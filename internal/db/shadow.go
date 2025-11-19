@@ -22,6 +22,7 @@ var (
 	shadowServerURL *url.URL
 
 	CrdbVersion string
+
 	// Optional host and port for test server
 	TestServerHost     string
 	TestServerPort     int
