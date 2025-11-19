@@ -111,6 +111,7 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 
 		ts, err := testserver.NewTestServer(opts...)
 		if err != nil {
+			PrintShadowDbLogs()
 			return nil, fmt.Errorf("failed to create test server: %w", err)
 		}
 		sharedDbServer = ts
@@ -126,6 +127,7 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 	// Connect will make sure the database exists
 	client, err := Connect(ctx, urlClone.String())
 	if err != nil {
+		PrintShadowDbLogs()
 		return nil, fmt.Errorf("failed to connect to test server: %w", err)
 	}
 	return client, nil
@@ -139,5 +141,29 @@ func StopShadowDbServer() {
 		sharedDbServer.Stop()
 		sharedDbServer = nil
 		shadowServerURL = nil
+	}
+}
+
+// GetShadowDbLogs returns the stdout and stderr logs from the shadow database server.
+// This is useful for debugging when operations fail.
+func GetShadowDbLogs() (stdout, stderr string) {
+	shadowServerMu.Lock()
+	defer shadowServerMu.Unlock()
+
+	if sharedDbServer != nil {
+		return sharedDbServer.Stdout(), sharedDbServer.Stderr()
+	}
+	return "", ""
+}
+
+// PrintShadowDbLogs prints the shadow database server logs to stderr.
+// This is useful for debugging when operations fail.
+func PrintShadowDbLogs() {
+	stdout, stderr := GetShadowDbLogs()
+	if stdout != "" {
+		fmt.Fprintf(os.Stderr, "\nCockroachDB stdout:\n%s\n", stdout)
+	}
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "\nCockroachDB stderr:\n%s\n", stderr)
 	}
 }
