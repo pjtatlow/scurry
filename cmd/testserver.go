@@ -22,12 +22,20 @@ The database will stay running until the process is killed (Ctrl+C).`,
 	RunE: runTestserver,
 }
 
-var urlFile string
+var (
+	urlFile        string
+	testServerHost string
+	testServerPort int
+	testServerHTTPPort int
+)
 
 func init() {
 	rootCmd.AddCommand(testserverCmd)
 	testserverCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
 	testserverCmd.Flags().StringVar(&urlFile, "url-file", "", "File to write the database URL to when it's ready")
+	testserverCmd.Flags().StringVar(&testServerHost, "host", "", "Host address for the test database server")
+	testserverCmd.Flags().IntVar(&testServerPort, "port", 0, "Port for the test database server")
+	testserverCmd.Flags().IntVar(&testServerHTTPPort, "http-port", 0, "HTTP port for the test database server")
 }
 
 func runTestserver(cmd *cobra.Command, args []string) error {
@@ -51,6 +59,17 @@ func runTestserver(cmd *cobra.Command, args []string) error {
 }
 
 func doTestserver(ctx context.Context, urlFile string) error {
+	// Configure test server host and port if provided
+	if testServerHost != "" {
+		db.TestServerHost = testServerHost
+	}
+	if testServerPort > 0 {
+		db.TestServerPort = testServerPort
+	}
+	if testServerHTTPPort > 0 {
+		db.TestServerHTTPPort = testServerHTTPPort
+	}
+
 	// Start test server
 	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Starting CRDB test server..."))
