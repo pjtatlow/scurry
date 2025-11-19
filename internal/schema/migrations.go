@@ -73,34 +73,101 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, error) {
 		}
 	}
 
-	// Collect all of the statements in a set, making sure dependencies are put in first.
-	// Then convert them into a big list of strings.
-	orderedStatements := set.New[*migrationStatement]()
-	for _, migration := range statements {
-		if orderedStatements.Contains(migration) {
-			continue
-		}
-		result, err := exploreDeps(migration, set.New[*migrationStatement]())
-		if err != nil {
-			return nil, err
-		}
-		orderedStatements = orderedStatements.Union(result)
-
+	// Perform topological sort with lexicographic tiebreaking
+	ddl, err := topologicalSort(statements, pretty)
+	if err != nil {
+		return nil, err
 	}
+	return ddl, nil
+}
 
-	ddl := make([]string, 0)
-	for migration := range orderedStatements.Values() {
+func topologicalSort(statements []*migrationStatement, pretty bool) ([]string, error) {
+	// Build a map of migrations to their string representations for sorting
+	stmtStrings := make(map[*migrationStatement]string, len(statements))
+	for _, migration := range statements {
+		var str string
 		if pretty {
 			s, err := tree.Pretty(migration.stmt)
 			if err == nil {
-				ddl = append(ddl, s)
-				continue
+				str = s
+			} else {
+				str = migration.stmt.String()
 			}
-
+		} else {
+			str = migration.stmt.String()
 		}
-		ddl = append(ddl, migration.stmt.String())
+		stmtStrings[migration] = str
 	}
-	return ddl, nil
+
+	// Build reverse adjacency list (who depends on me?) and calculate in-degree
+	inDegree := make(map[*migrationStatement]int, len(statements))
+	dependents := make(map[*migrationStatement][]*migrationStatement)
+
+	for _, migration := range statements {
+		inDegree[migration] = 0
+	}
+
+	for _, migration := range statements {
+		for dep := range migration.requires.Values() {
+			inDegree[migration]++
+			dependents[dep] = append(dependents[dep], migration)
+		}
+	}
+
+	// Start with all statements that have no dependencies
+	ready := make([]*migrationStatement, 0)
+	for _, migration := range statements {
+		if inDegree[migration] == 0 {
+			ready = append(ready, migration)
+		}
+	}
+
+	// Sort ready statements lexicographically
+	slices.SortFunc(ready, func(a, b *migrationStatement) int {
+		return strings.Compare(stmtStrings[a], stmtStrings[b])
+	})
+
+	result := make([]string, 0, len(statements))
+
+	for len(ready) > 0 {
+		// Pop the first (lexicographically smallest) statement
+		current := ready[0]
+		ready = ready[1:]
+
+		// Add to result
+		result = append(result, stmtStrings[current])
+
+		// Process dependents of the current statement
+		newReady := make([]*migrationStatement, 0)
+		for _, dependent := range dependents[current] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				newReady = append(newReady, dependent)
+			}
+		}
+
+		// Sort newly ready statements lexicographically and add to ready list
+		slices.SortFunc(newReady, func(a, b *migrationStatement) int {
+			return strings.Compare(stmtStrings[a], stmtStrings[b])
+		})
+		ready = append(ready, newReady...)
+	}
+
+	// Check if all statements were processed (detect cycles)
+	if len(result) != len(statements) {
+		// Find a cycle for error reporting
+		for _, migration := range statements {
+			if inDegree[migration] > 0 {
+				_, err := exploreDeps(migration, set.New[*migrationStatement]())
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		return nil, fmt.Errorf("unable to process all statements due to dependency issues")
+	}
+
+	return result, nil
 }
 
 func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatement]) (set.Set[*migrationStatement], error) {
