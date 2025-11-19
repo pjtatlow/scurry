@@ -15,6 +15,10 @@ import (
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
+var (
+	migrationName string
+)
+
 var migrationGenCmd = &cobra.Command{
 	Use:   "gen",
 	Short: "Generate migration from schema changes",
@@ -26,6 +30,7 @@ This will detect differences and create a new migration file with the necessary 
 func init() {
 	migrationCmd.AddCommand(migrationGenCmd)
 	migrationGenCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
+	migrationGenCmd.Flags().StringVar(&migrationName, "name", "", "Name for the migration (skips prompt)")
 }
 
 func migrationGen(cmd *cobra.Command, args []string) error {
@@ -129,27 +134,33 @@ func doMigrationGen(ctx context.Context) error {
 		}
 	}
 
-	// 5. Ask user for migration name
-	var migrationName string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Migration name").
-				Description("Enter a descriptive name for this migration").
-				Placeholder("add_users_table").
-				Value(&migrationName).
-				Validate(func(s string) error {
-					if s == "" {
-						return fmt.Errorf("migration name cannot be empty")
-					}
-					return nil
-				}),
-		),
-	).WithTheme(ui.HuhTheme())
+	// 5. Get migration name (from flag or prompt)
+	var name string
+	if migrationName != "" {
+		// Use the name from the flag
+		name = migrationName
+	} else {
+		// Ask user for migration name
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Migration name").
+					Description("Enter a descriptive name for this migration").
+					Placeholder("add_users_table").
+					Value(&name).
+					Validate(func(s string) error {
+						if s == "" {
+							return fmt.Errorf("migration name cannot be empty")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(ui.HuhTheme())
 
-	err = form.Run()
-	if err != nil {
-		return fmt.Errorf("migration name input canceled: %w", err)
+		err = form.Run()
+		if err != nil {
+			return fmt.Errorf("migration name input canceled: %w", err)
+		}
 	}
 
 	// Create migration directory and file
@@ -158,7 +169,7 @@ func doMigrationGen(ctx context.Context) error {
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, err := createMigration(fs, migrationName, statements)
+	migrationDirName, err := createMigration(fs, name, statements)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}

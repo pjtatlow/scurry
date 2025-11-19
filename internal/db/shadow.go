@@ -23,6 +23,11 @@ var (
 
 	CrdbVersion string
 
+	// Optional host and port for test server
+	TestServerHost     string
+	TestServerPort     int
+	TestServerHTTPPort int
+
 	logOutput bytes.Buffer
 )
 
@@ -67,6 +72,21 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		opts := make([]testserver.TestServerOpt, 0)
 		if CrdbVersion != "" {
 			opts = append(opts, testserver.CustomVersionOpt(CrdbVersion))
+		}
+
+		// Add host option if specified
+		if TestServerHost != "" {
+			opts = append(opts, testserver.ListenAddrHostOpt(TestServerHost))
+		}
+
+		// Add SQL port option if specified
+		if TestServerPort > 0 {
+			opts = append(opts, testserver.AddListenAddrPortOpt(TestServerPort))
+		}
+
+		// Add HTTP port option if specified
+		if TestServerHTTPPort > 0 {
+			opts = append(opts, testserver.AddHttpPortOpt(TestServerHTTPPort))
 		}
 
 		// Parse COCKROACH_ENV variable if set

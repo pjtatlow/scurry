@@ -22,12 +22,17 @@ The database will stay running until the process is killed (Ctrl+C).`,
 	RunE: runTestserver,
 }
 
-var urlFile string
+var (
+	urlFile string
+)
 
 func init() {
 	rootCmd.AddCommand(testserverCmd)
 	testserverCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
 	testserverCmd.Flags().StringVar(&urlFile, "url-file", "", "File to write the database URL to when it's ready")
+	testserverCmd.Flags().StringVar(&db.TestServerHost, "host", "", "Host address for the test database server")
+	testserverCmd.Flags().IntVar(&db.TestServerPort, "port", 0, "Port for the test database server")
+	testserverCmd.Flags().IntVar(&db.TestServerHTTPPort, "http-port", 0, "HTTP port for the test database server")
 }
 
 func runTestserver(cmd *cobra.Command, args []string) error {
