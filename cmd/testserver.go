@@ -61,11 +61,6 @@ func doTestserver(ctx context.Context, urlFile string) error {
 		fmt.Println(ui.Subtle("→ Starting CRDB test server..."))
 	}
 
-	// Load local schema
-	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
-	}
-
 	dbClient, err := db.GetShadowDB(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get shadow database client: %w", err)
@@ -74,9 +69,17 @@ func doTestserver(ctx context.Context, urlFile string) error {
 
 	testServerUrl := dbClient.ConnectionString()
 
-	_, err = schema.LoadFromDirectory(ctx, afero.NewOsFs(), schemaDir, dbClient)
+	// Load local schema
+	if flags.Verbose {
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
+	}
+	testSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), schemaDir, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
+	}
+	if flags.Verbose {
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
+			len(testSchema.Tables), len(testSchema.Types), len(testSchema.Routines), len(testSchema.Sequences), len(testSchema.Views))))
 	}
 
 	// Write URL to file
