@@ -159,7 +159,9 @@ func LoadFromDirectory(ctx context.Context, fs afero.Fs, dirPath string, dbClien
 		return nil, err
 	}
 
-	dbClient.ExecuteBulkDDL(ctx, statements...)
+	if err := dbClient.ExecuteBulkDDL(ctx, statements...); err != nil {
+		return nil, err
+	}
 
 	// 3. Get standardized create statements from the database
 	return LoadFromDatabase(ctx, dbClient)
