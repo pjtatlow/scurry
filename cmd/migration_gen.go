@@ -29,7 +29,8 @@ This will detect differences and create a new migration file with the necessary 
 
 func init() {
 	migrationCmd.AddCommand(migrationGenCmd)
-	migrationGenCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
+
+	flags.AddDefinitionDir(migrationGenCmd)
 	migrationGenCmd.Flags().StringVar(&migrationName, "name", "", "Name for the migration (skips prompt)")
 }
 
@@ -37,8 +38,8 @@ func migrationGen(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// Validate required flags
-	if schemaDir == "" {
-		return fmt.Errorf("schema directory is required (use --schema-dir)")
+	if flags.DefinitionDir == "" {
+		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
 	err := doMigrationGen(ctx)
@@ -60,7 +61,7 @@ func doMigrationGen(ctx context.Context) error {
 
 	// 1. Load local schema from schema-dir
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -69,7 +70,7 @@ func doMigrationGen(ctx context.Context) error {
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, fs, schemaDir, dbClient)
+	localSchema, err := schema.LoadFromDirectory(ctx, fs, flags.DefinitionDir, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}

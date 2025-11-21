@@ -30,19 +30,21 @@ var (
 
 func init() {
 	rootCmd.AddCommand(pushCmd)
-	pushCmd.Flags().StringVar(&dbURL, "db-url", os.Getenv("CRDB_URL"), "Database connection URL (defaults to CRDB_URL env var)")
-	pushCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
+
+	flags.AddDbUrl(pushCmd)
+	flags.AddDefinitionDir(pushCmd)
+
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be executed without applying changes")
 	pushCmd.Flags().BoolVar(&pushForce, "force", false, "Skip confirmation prompt")
 }
 
 func push(cmd *cobra.Command, args []string) error {
 	// Validate required flags
-	if dbURL == "" {
+	if flags.DbUrl == "" {
 		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
 	}
-	if schemaDir == "" {
-		return fmt.Errorf("schema directory is required (use --schema-dir)")
+	if flags.DefinitionDir == "" {
+		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
 	err := doPush(cmd.Context())
@@ -56,12 +58,12 @@ func push(cmd *cobra.Command, args []string) error {
 
 // PushOptions contains options for the push operation
 type PushOptions struct {
-	Fs        afero.Fs
-	SchemaDir string
-	DbClient  *db.Client
-	Verbose   bool
-	DryRun    bool
-	Force     bool
+	Fs            afero.Fs
+	DefinitionDir string
+	DbClient      *db.Client
+	Verbose       bool
+	DryRun        bool
+	Force         bool
 }
 
 // PushResult contains the result of a push operation
@@ -72,19 +74,19 @@ type PushResult struct {
 
 func doPush(ctx context.Context) error {
 
-	client, err := db.Connect(ctx, dbURL)
+	client, err := db.Connect(ctx, flags.DbUrl)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	defer client.Close()
 
 	opts := PushOptions{
-		Fs:        afero.NewOsFs(),
-		SchemaDir: schemaDir,
-		DbClient:  client,
-		Verbose:   flags.Verbose,
-		DryRun:    pushDryRun,
-		Force:     pushForce,
+		Fs:            afero.NewOsFs(),
+		DefinitionDir: flags.DefinitionDir,
+		DbClient:      client,
+		Verbose:       flags.Verbose,
+		DryRun:        pushDryRun,
+		Force:         pushForce,
 	}
 
 	_, err = executePush(ctx, opts)
@@ -94,7 +96,7 @@ func doPush(ctx context.Context) error {
 func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	// Load local schema from files
 	if opts.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", opts.SchemaDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", opts.DefinitionDir)))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -103,7 +105,7 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, opts.Fs, opts.SchemaDir, dbClient)
+	localSchema, err := schema.LoadFromDirectory(ctx, opts.Fs, opts.DefinitionDir, dbClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load local schema: %w", err)
 	}

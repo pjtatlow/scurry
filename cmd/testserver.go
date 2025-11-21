@@ -28,7 +28,9 @@ var (
 
 func init() {
 	rootCmd.AddCommand(testserverCmd)
-	testserverCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
+
+	flags.AddDefinitionDir(testserverCmd)
+
 	testserverCmd.Flags().StringVar(&urlFile, "url-file", "", "File to write the database URL to when it's ready")
 	testserverCmd.Flags().StringVar(&db.TestServerHost, "host", "", "Host address for the test database server")
 	testserverCmd.Flags().IntVar(&db.TestServerPort, "port", 0, "Port for the test database server")
@@ -39,8 +41,8 @@ func runTestserver(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// Validate required flags
-	if schemaDir == "" {
-		return fmt.Errorf("schema directory is required (use --schema-dir)")
+	if flags.DefinitionDir == "" {
+		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 	if urlFile == "" {
 		return fmt.Errorf("url file is required (use --url-file)")
@@ -71,9 +73,9 @@ func doTestserver(ctx context.Context, urlFile string) error {
 
 	// Load local schema
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
 	}
-	testSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), schemaDir, dbClient)
+	testSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), flags.DefinitionDir, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}

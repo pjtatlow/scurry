@@ -30,7 +30,7 @@ var (
 
 func init() {
 	rootCmd.AddCommand(dumpCmd)
-	dumpCmd.Flags().StringVar(&dbURL, "db-url", os.Getenv("CRDB_URL"), "Database connection URL (defaults to CRDB_URL env var)")
+	flags.AddDbUrl(rootCmd)
 	dumpCmd.Flags().BoolVar(&dumpForce, "force", false, "Overwrite the output file without confirmation")
 }
 
@@ -39,7 +39,7 @@ func dump(cmd *cobra.Command, args []string) error {
 	outputFile := args[0]
 
 	// Validate required flags
-	if dbURL == "" {
+	if flags.DbUrl == "" {
 		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
 	}
 
@@ -78,7 +78,7 @@ func doDump(ctx context.Context, outputFile string) error {
 		fmt.Println(ui.Subtle("→ Connecting to database..."))
 	}
 
-	client, err := db.Connect(ctx, dbURL)
+	client, err := db.Connect(ctx, flags.DbUrl)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}

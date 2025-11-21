@@ -14,10 +14,6 @@ import (
 )
 
 var (
-	// Shared command flags
-	dbURL     string
-	schemaDir string
-
 	// Global context for signal handling
 	rootContext context.Context
 	cancelFunc  context.CancelFunc

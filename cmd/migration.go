@@ -10,12 +10,9 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
-)
-
-var (
-	migrationDir string
 )
 
 var migrationCmd = &cobra.Command{
@@ -27,18 +24,18 @@ or creating new migrations manually.`,
 
 func init() {
 	rootCmd.AddCommand(migrationCmd)
-	migrationCmd.PersistentFlags().StringVar(&migrationDir, "migration-dir", "./migrations", "Directory containing migration files")
+	flags.AddMigrationDir(rootCmd)
 }
 
 // Helper function to validate migrations directory structure
 func validateMigrationsDir(fs afero.Fs) error {
 	// Check if migrations directory exists
-	exists, err := afero.DirExists(fs, migrationDir)
+	exists, err := afero.DirExists(fs, flags.MigrationDir)
 	if err != nil {
 		return fmt.Errorf("failed to check migrations directory: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("migrations directory does not exist: %s", migrationDir)
+		return fmt.Errorf("migrations directory does not exist: %s", flags.MigrationDir)
 	}
 
 	return nil
@@ -46,7 +43,7 @@ func validateMigrationsDir(fs afero.Fs) error {
 
 // Helper function to get schema.sql path
 func getSchemaFilePath() string {
-	return filepath.Join(migrationDir, "schema.sql")
+	return filepath.Join(flags.MigrationDir, "schema.sql")
 }
 
 // Helper function to load production schema from schema.sql
@@ -112,7 +109,7 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, err
 	// Generate timestamp prefix
 	timestamp := time.Now().Format("20060102150405")
 	migrationName := fmt.Sprintf("%s_%s", timestamp, name)
-	migrationPath := filepath.Join(migrationDir, migrationName)
+	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
 
 	// Create migration directory
 	err := fs.MkdirAll(migrationPath, 0755)
