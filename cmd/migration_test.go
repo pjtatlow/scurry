@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/schema"
 )
@@ -69,12 +70,12 @@ func TestLoadProductionSchema(t *testing.T) {
 			fs := afero.NewMemMapFs()
 
 			// Create migrations directory
-			err := fs.MkdirAll(migrationDir, 0755)
+			err := fs.MkdirAll(flags.MigrationDir, 0755)
 			require.NoError(t, err)
 
 			// Write schema.sql if content provided
 			if tt.schemaContent != "" {
-				schemaPath := filepath.Join(migrationDir, "schema.sql")
+				schemaPath := filepath.Join(flags.MigrationDir, "schema.sql")
 				err = afero.WriteFile(fs, schemaPath, []byte(tt.schemaContent), 0644)
 				require.NoError(t, err)
 			}
@@ -100,7 +101,7 @@ func TestDumpProductionSchema(t *testing.T) {
 	fs := afero.NewMemMapFs()
 
 	// Create migrations directory
-	err := fs.MkdirAll(migrationDir, 0755)
+	err := fs.MkdirAll(flags.MigrationDir, 0755)
 	require.NoError(t, err)
 
 	// Create a schema with some objects
@@ -114,7 +115,7 @@ func TestDumpProductionSchema(t *testing.T) {
 	`
 
 	// Write the SQL to schema.sql
-	schemaPath := filepath.Join(migrationDir, "schema.sql")
+	schemaPath := filepath.Join(flags.MigrationDir, "schema.sql")
 	err = afero.WriteFile(fs, schemaPath, []byte(schemaSQL), 0644)
 	require.NoError(t, err)
 
@@ -147,7 +148,7 @@ func TestCreateMigration(t *testing.T) {
 	fs := afero.NewMemMapFs()
 
 	// Create migrations directory
-	err := fs.MkdirAll(migrationDir, 0755)
+	err := fs.MkdirAll(flags.MigrationDir, 0755)
 	require.NoError(t, err)
 
 	// Create a migration
@@ -164,7 +165,7 @@ func TestCreateMigration(t *testing.T) {
 	assert.True(t, len(migrationName) > len("add_posts_table"), "migration name should include timestamp")
 
 	// Verify migration directory exists
-	migrationPath := filepath.Join(migrationDir, migrationName)
+	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
 	exists, err := afero.DirExists(fs, migrationPath)
 	require.NoError(t, err)
 	assert.True(t, exists)
@@ -232,12 +233,12 @@ func TestApplyMigrationsToSchema(t *testing.T) {
 			fs := afero.NewMemMapFs()
 
 			// Create migrations directory
-			err := fs.MkdirAll(migrationDir, 0755)
+			err := fs.MkdirAll(flags.MigrationDir, 0755)
 			require.NoError(t, err)
 
 			// Write schema.sql with initial schema
 			if strings.TrimSpace(tt.initialSQL) != "" {
-				schemaPath := filepath.Join(migrationDir, "schema.sql")
+				schemaPath := filepath.Join(flags.MigrationDir, "schema.sql")
 				err = afero.WriteFile(fs, schemaPath, []byte(tt.initialSQL), 0644)
 				require.NoError(t, err)
 			}
@@ -264,13 +265,13 @@ func TestMigrateGenIntegration(t *testing.T) {
 	schemaDir := "/schema"
 
 	// Create directories
-	err := fs.MkdirAll(migrationDir, 0755)
+	err := fs.MkdirAll(flags.MigrationDir, 0755)
 	require.NoError(t, err)
 	err = fs.MkdirAll(schemaDir, 0755)
 	require.NoError(t, err)
 
 	// Create initial production schema (empty schema.sql)
-	schemaPath := filepath.Join(migrationDir, "schema.sql")
+	schemaPath := filepath.Join(flags.MigrationDir, "schema.sql")
 	err = afero.WriteFile(fs, schemaPath, []byte(""), 0644)
 	require.NoError(t, err)
 
@@ -311,7 +312,7 @@ func TestMigrateGenIntegration(t *testing.T) {
 	assert.NotEmpty(t, migrationName)
 
 	// Verify migration file was created
-	migrationFile := filepath.Join(migrationDir, migrationName, "migration.sql")
+	migrationFile := filepath.Join(flags.MigrationDir, migrationName, "migration.sql")
 	exists, err := afero.Exists(fs, migrationFile)
 	require.NoError(t, err)
 	assert.True(t, exists)

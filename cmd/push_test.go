@@ -295,12 +295,12 @@ func TestPushIntegration(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:        fs,
-				SchemaDir: schemaDir,
-				DbClient:  client,
-				Verbose:   false,
-				DryRun:    false,
-				Force:     true,
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
 			}
 
 			result, err := executePush(ctx, opts)
@@ -599,12 +599,12 @@ func TestPushIntegrationComplex(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:        fs,
-				SchemaDir: schemaDir,
-				DbClient:  client,
-				Verbose:   false,
-				DryRun:    false,
-				Force:     true,
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
 			}
 
 			result, err := executePush(ctx, opts)
@@ -658,12 +658,12 @@ func TestPushIntegrationNoChanges(t *testing.T) {
 	require.NoError(t, err)
 
 	opts := PushOptions{
-		Fs:        fs,
-		SchemaDir: schemaDir,
-		DbClient:  client,
-		Verbose:   false,
-		DryRun:    false,
-		Force:     true,
+		Fs:            fs,
+		DefinitionDir: schemaDir,
+		DbClient:      client,
+		Verbose:       false,
+		DryRun:        false,
+		Force:         true,
 	}
 
 	// First push
@@ -703,12 +703,12 @@ func TestPushIntegrationDryRun(t *testing.T) {
 	require.NoError(t, err)
 
 	opts := PushOptions{
-		Fs:        fs,
-		SchemaDir: schemaDir,
-		DbClient:  client,
-		Verbose:   false,
-		DryRun:    true,
-		Force:     true,
+		Fs:            fs,
+		DefinitionDir: schemaDir,
+		DbClient:      client,
+		Verbose:       false,
+		DryRun:        true,
+		Force:         true,
 	}
 
 	// Dry run push

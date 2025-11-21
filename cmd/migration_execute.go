@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -44,7 +45,9 @@ Examples:
 
 func init() {
 	migrationCmd.AddCommand(migrationExecuteCmd)
-	migrationExecuteCmd.Flags().StringVar(&dbURL, "db-url", os.Getenv("CRDB_URL"), "Database connection URL (defaults to CRDB_URL env var)")
+
+	flags.AddDbUrl(migrationExecuteCmd)
+
 	migrationExecuteCmd.Flags().BoolVar(&executeDryRun, "dry-run", false, "Show what would be executed without applying")
 	migrationExecuteCmd.Flags().BoolVar(&executeForce, "force", false, "Skip confirmation prompt")
 }
@@ -59,12 +62,12 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(migrations) == 0 {
-		fmt.Println(ui.Info(fmt.Sprintf("No migrations found in %s", migrationDir)))
+		fmt.Println(ui.Info(fmt.Sprintf("No migrations found in %s", flags.MigrationDir)))
 		return nil
 	}
 
 	// Connect to database
-	dbClient, err := db.Connect(ctx, dbURL)
+	dbClient, err := db.Connect(ctx, flags.DbUrl)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -164,7 +167,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 // and returns them with checksums computed
 func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
 	// Read migrations directory
-	entries, err := afero.ReadDir(fs, migrationDir)
+	entries, err := afero.ReadDir(fs, flags.MigrationDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []db.Migration{}, nil
@@ -193,7 +196,7 @@ func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
 	// Read migration.sql from each directory
 	var allMigrations []db.Migration
 	for _, dir := range migrationDirs {
-		migrationFile := filepath.Join(migrationDir, dir, "migration.sql")
+		migrationFile := filepath.Join(flags.MigrationDir, dir, "migration.sql")
 
 		// Check if migration.sql exists
 		exists, err := afero.Exists(fs, migrationFile)

@@ -24,13 +24,14 @@ This will try to execute the local schema in a new shadow database to ensure it 
 
 func init() {
 	rootCmd.AddCommand(validateCmd)
-	validateCmd.Flags().StringVar(&schemaDir, "schema-dir", "./schema", "Directory containing schema SQL files")
+
+	flags.AddDefinitionDir(validateCmd)
 }
 
 func validate(cmd *cobra.Command, args []string) error {
 	// Validate required flags
-	if schemaDir == "" {
-		return fmt.Errorf("schema directory is required (use --schema-dir)")
+	if flags.DefinitionDir == "" {
+		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
 	err := doValidate(cmd.Context())
@@ -46,7 +47,7 @@ func doValidate(ctx context.Context) error {
 
 	// Load local schema from files
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", schemaDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -55,7 +56,7 @@ func doValidate(ctx context.Context) error {
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), schemaDir, dbClient)
+	localSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), flags.DefinitionDir, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}

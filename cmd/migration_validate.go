@@ -169,7 +169,7 @@ func doMigrationValidate(ctx context.Context) error {
 // loadMigrations loads all migration files from the migrations directory in order
 func loadMigrations(fs afero.Fs) ([]migration, error) {
 	// Read migrations directory
-	entries, err := afero.ReadDir(fs, migrationDir)
+	entries, err := afero.ReadDir(fs, flags.MigrationDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
 	}
@@ -195,7 +195,7 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 	// Read migration.sql from each directory
 	var allMigrations []migration
 	for _, dir := range migrationDirs {
-		migrationFile := filepath.Join(migrationDir, dir, "migration.sql")
+		migrationFile := filepath.Join(flags.MigrationDir, dir, "migration.sql")
 
 		// Check if migration.sql exists
 		exists, err := afero.Exists(fs, migrationFile)
