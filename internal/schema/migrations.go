@@ -26,14 +26,19 @@ func (dm dependencyMap) add(name string, stmt *migrationStatement) {
 	}
 }
 
-func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, error) {
+func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, error) {
 	statements := make([]*migrationStatement, 0)
+	warnings := make([]string, 0)
 	// Multiple statements can provide the same name, like functions with overloads
 	providers := make(dependencyMap)
 
 	// Dropping the schema has to come last, save them for the end
 	dropSchemaStmts := make([]*migrationStatement, 0)
 	for _, difference := range r.Differences {
+		if difference.WarningMessage != "" {
+			warnings = append(warnings, difference.WarningMessage)
+		}
+
 		var prev *migrationStatement
 		for _, ddl := range difference.MigrationStatements {
 
@@ -82,7 +87,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, error) {
 		}
 		result, err := exploreDeps(migration, set.New[*migrationStatement]())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		orderedStatements = orderedStatements.Union(result)
 
@@ -90,17 +95,19 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, error) {
 
 	ddl := make([]string, 0)
 	for migration := range orderedStatements.Values() {
+		var s string
+		var err error
 		if pretty {
-			s, err := tree.Pretty(migration.stmt)
-			if err == nil {
-				ddl = append(ddl, s)
-				continue
+			s, err = tree.Pretty(migration.stmt)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to pretty print migration statement: %w", err)
 			}
-
+		} else {
+			s = migration.stmt.String()
 		}
-		ddl = append(ddl, migration.stmt.String())
+		ddl = append(ddl, s)
 	}
-	return ddl, nil
+	return ddl, warnings, nil
 }
 
 func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatement]) (set.Set[*migrationStatement], error) {

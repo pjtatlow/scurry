@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 )
 
 var (
@@ -59,5 +59,7 @@ func Execute() error {
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&db.CrdbVersion, "crdb-version", os.Getenv("CRDB_VERSION"), "CockroachDB version, defaults to latest.")
-	rootCmd.PersistentFlags().BoolVarP(&flags.Verbose, "verbose", "v", false, "Enable verbose output")
+
+	flags.AddVerbose(rootCmd)
+	flags.AddForce(rootCmd)
 }

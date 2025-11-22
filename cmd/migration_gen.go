@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -109,30 +109,30 @@ func doMigrationGen(ctx context.Context) error {
 		fmt.Println(ui.Success("✓ No schema changes detected"))
 		return nil
 	}
+	// Generate migration statements
+	statements, warnings, err := diffResult.GenerateMigrations(true)
+	if err != nil {
+		return fmt.Errorf("failed to generate migrations: %w", err)
+	}
 
 	// Show differences
 	if flags.Verbose {
 		fmt.Println(ui.Header("\nDifferences found:"))
 		fmt.Println(diffResult.Summary())
-	}
+		fmt.Println()
+		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s) with %d warning(s):", len(statements), len(warnings))))
 
-	// Generate migration statements
-	statements, err := diffResult.GenerateMigrations(true)
-	if err != nil {
-		return fmt.Errorf("failed to generate migrations: %w", err)
+		for i, stmt := range statements {
+			fmt.Printf("%s %s\n\n", ui.Info(fmt.Sprintf("%d.", i+1)), ui.SqlCode(stmt))
+		}
+	}
+	for i, warning := range warnings {
+		fmt.Printf("WARNING: %s \n\n", ui.Warning(fmt.Sprintf("%d. %s", i+1, warning)))
 	}
 
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
 	if err != nil {
 		return fmt.Errorf("failed to apply migrations to schema: %w", err)
-	}
-
-	if flags.Verbose {
-		fmt.Println()
-		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s):", len(statements))))
-		for i, stmt := range statements {
-			fmt.Printf("%s %s\n\n", ui.Info(fmt.Sprintf("%d.", i+1)), ui.SqlCode(stmt))
-		}
 	}
 
 	// 5. Get migration name (from flag or prompt)

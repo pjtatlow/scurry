@@ -144,6 +144,12 @@ func compareColumns(tableName string, tableRef tree.TableName, localCols, remote
 	// Find added columns
 	for colName, localCol := range localCols {
 		if _, existsInRemote := remoteCols[colName]; !existsInRemote {
+
+			var warningMessage string
+			requiredWithoutDefault := localCol.Nullable.Nullability == tree.NotNull && (!localCol.HasDefaultExpr() && !localCol.IsComputed())
+			if requiredWithoutDefault {
+				warningMessage = fmt.Sprintf("Column '%s.%s' is non-nullable but has no default value. Will fail to add column if the table is not empty.", tableName, colName)
+			}
 			createColumn := &tree.AlterTable{
 				Table: tableRef.ToUnresolvedObjectName(),
 				Cmds: tree.AlterTableCmds{
@@ -156,6 +162,8 @@ func compareColumns(tableName string, tableRef tree.TableName, localCols, remote
 				Type:                DiffTypeTableModified,
 				ObjectName:          tableName,
 				Description:         fmt.Sprintf("Column '%s.%s' added", tableName, colName),
+				Dangerous:           warningMessage != "",
+				WarningMessage:      warningMessage,
 				MigrationStatements: []tree.Statement{createColumn},
 			})
 		} else {
@@ -192,11 +200,12 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	dropAndCreate := func(description string) []Difference {
 		return []Difference{
 			{
-				Type:         DiffTypeTableColumnModified,
-				ObjectName:   tableName,
-				Description:  description,
-				Dangerous:    true,
-				IsDropCreate: true,
+				Type:           DiffTypeTableColumnModified,
+				ObjectName:     tableName,
+				Description:    description,
+				Dangerous:      true,
+				WarningMessage: fmt.Sprintf("Column '%s.%s' will be dropped and re-created, can result in data loss.", tableName, colName),
+				IsDropCreate:   true,
 				MigrationStatements: []tree.Statement{
 					&tree.AlterTable{
 						Table: tableRef.ToUnresolvedObjectName(),

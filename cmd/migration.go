@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 )
 
@@ -87,7 +87,7 @@ func loadProductionSchema(ctx context.Context, fs afero.Fs) (*schema.Schema, err
 func dumpProductionSchema(ctx context.Context, fs afero.Fs, sch *schema.Schema) error {
 	schemaPath := getSchemaFilePath()
 
-	statements, err := schema.Compare(sch, schema.NewSchema()).GenerateMigrations(true)
+	statements, _, err := schema.Compare(sch, schema.NewSchema()).GenerateMigrations(true)
 	if err != nil {
 		return fmt.Errorf("failed to dump new schema: %w", err)
 	}
@@ -130,17 +130,15 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, err
 
 // Helper function to apply migrations to production schema
 func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, migrations []string) (*schema.Schema, error) {
-	// Combine production schema statements with migration statements
-	allStatements := make([]string, 0, len(prodSchema.OriginalStatements)+len(migrations))
-	allStatements = append(allStatements, prodSchema.OriginalStatements...)
-	allStatements = append(allStatements, migrations...)
 
 	// Use shared test server to apply statements
-	client, err := db.GetShadowDB(ctx, allStatements...)
+	client, err := db.GetShadowDB(ctx, prodSchema.OriginalStatements...)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
+
+	client.ExecuteBulkDDL(ctx, migrations...)
 
 	// Get the new schema from the database
 	return schema.LoadFromDatabase(ctx, client)
