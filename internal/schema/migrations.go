@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/huh"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 
 	"github.com/pjtatlow/scurry/internal/set"
@@ -90,15 +92,78 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, error) {
 
 	ddl := make([]string, 0)
 	for migration := range orderedStatements.Values() {
-		if pretty {
-			s, err := tree.Pretty(migration.stmt)
-			if err == nil {
-				ddl = append(ddl, s)
-				continue
+		additionalStatements := make([]string, 0)
+		// Check for "impossible" statements, like adding a column with no default
+		switch stmt := migration.stmt.(type) {
+		case *tree.AlterTable:
+			for _, cmd := range stmt.Cmds {
+				switch cmd := cmd.(type) {
+				case *tree.AlterTableAddColumn:
+					if !cmd.ColumnDef.HasDefaultExpr() && cmd.ColumnDef.Nullable.Nullability == tree.NotNull {
+						addDefault, err := ui.ConfirmPrompt("A non-nullable column has been added without a default value.\nIf this table has any rows, the migrations will fail.\nDo you want to add a default value?\n(press ctrl-c to cancel)")
+						if err != nil {
+							return nil, err
+						}
+						if addDefault {
+							var defaultValue string
+							form := huh.NewForm(
+								huh.NewGroup(
+									huh.NewText().
+										Title("SQL Expression").
+										Description("Enter your SQL expression").
+										Placeholder("0").
+										Value(&defaultValue).
+										CharLimit(10000).
+										Validate(func(s string) error {
+											if strings.TrimSpace(s) == "" {
+												return fmt.Errorf("SQL expression cannot be empty")
+											}
+											// Validate SQL
+											_, err := parser.ParseExpr(s)
+											if err != nil {
+												return fmt.Errorf("invalid expression: %w", err)
+											}
+											return nil
+										}),
+								),
+							).WithTheme(ui.HuhTheme())
+
+							err = form.Run()
+							if err != nil {
+								return nil, fmt.Errorf("expression input canceled: %w", err)
+							}
+							newExpr, err := parser.ParseExpr(defaultValue)
+							if err != nil {
+								return nil, fmt.Errorf("invalid expression: %w", err)
+							}
+							cmd.ColumnDef.DefaultExpr.Expr = newExpr
+							additionalStatements = append(additionalStatements, "-- TODO: initialize column value before dropping the default value")
+							dropDefault := tree.AlterTable{
+								Table: stmt.Table,
+								Cmds: []tree.AlterTableCmd{
+									&tree.AlterTableSetDefault{
+										Column:  cmd.ColumnDef.Name,
+										Default: nil,
+									},
+								},
+							}
+							additionalStatements = append(additionalStatements, dropDefault.String())
+						}
+					}
+				}
 			}
 
 		}
-		ddl = append(ddl, migration.stmt.String())
+		if pretty {
+			s, err := tree.Pretty(migration.stmt)
+			if err != nil {
+				return nil, fmt.Errorf("failed to pretty print migration statement: %w", err)
+			}
+			ddl = append(ddl, s)
+		} else {
+			ddl = append(ddl, migration.stmt.String())
+		}
+		ddl = append(ddl, additionalStatements...)
 	}
 	return ddl, nil
 }

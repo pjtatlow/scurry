@@ -109,30 +109,27 @@ func doMigrationGen(ctx context.Context) error {
 		fmt.Println(ui.Success("✓ No schema changes detected"))
 		return nil
 	}
-
-	// Show differences
-	if flags.Verbose {
-		fmt.Println(ui.Header("\nDifferences found:"))
-		fmt.Println(diffResult.Summary())
-	}
-
 	// Generate migration statements
 	statements, err := diffResult.GenerateMigrations(true)
 	if err != nil {
 		return fmt.Errorf("failed to generate migrations: %w", err)
 	}
 
-	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
-	if err != nil {
-		return fmt.Errorf("failed to apply migrations to schema: %w", err)
-	}
-
+	// Show differences
 	if flags.Verbose {
+		fmt.Println(ui.Header("\nDifferences found:"))
+		fmt.Println(diffResult.Summary())
 		fmt.Println()
 		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s):", len(statements))))
+
 		for i, stmt := range statements {
 			fmt.Printf("%s %s\n\n", ui.Info(fmt.Sprintf("%d.", i+1)), ui.SqlCode(stmt))
 		}
+	}
+
+	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
+	if err != nil {
+		return fmt.Errorf("failed to apply migrations to schema: %w", err)
 	}
 
 	// 5. Get migration name (from flag or prompt)

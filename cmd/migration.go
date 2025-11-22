@@ -130,17 +130,15 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, err
 
 // Helper function to apply migrations to production schema
 func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, migrations []string) (*schema.Schema, error) {
-	// Combine production schema statements with migration statements
-	allStatements := make([]string, 0, len(prodSchema.OriginalStatements)+len(migrations))
-	allStatements = append(allStatements, prodSchema.OriginalStatements...)
-	allStatements = append(allStatements, migrations...)
 
 	// Use shared test server to apply statements
-	client, err := db.GetShadowDB(ctx, allStatements...)
+	client, err := db.GetShadowDB(ctx, prodSchema.OriginalStatements...)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
+
+	client.ExecuteBulkDDL(ctx, migrations...)
 
 	// Get the new schema from the database
 	return schema.LoadFromDatabase(ctx, client)
