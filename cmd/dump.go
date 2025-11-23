@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -25,13 +25,13 @@ This creates a file similar to migrations/schema.sql that can recreate the entir
 }
 
 var (
-	dumpForce bool
+	dumpOverwrite bool
 )
 
 func init() {
 	rootCmd.AddCommand(dumpCmd)
 	flags.AddDbUrl(rootCmd)
-	dumpCmd.Flags().BoolVar(&dumpForce, "force", false, "Overwrite the output file without confirmation")
+	dumpCmd.Flags().BoolVar(&dumpOverwrite, "overwrite", false, "Overwrite the output file without confirmation")
 }
 
 func dump(cmd *cobra.Command, args []string) error {
@@ -62,7 +62,7 @@ func doDump(ctx context.Context, outputFile string) error {
 		return fmt.Errorf("failed to check output file: %w", err)
 	}
 
-	if exists && !dumpForce {
+	if exists && !dumpOverwrite {
 		confirmed, err := ui.ConfirmPrompt(fmt.Sprintf("File %s already exists. Overwrite?", outputFile))
 		if err != nil {
 			return fmt.Errorf("confirmation prompt failed: %w", err)
@@ -104,7 +104,7 @@ func doDump(ctx context.Context, outputFile string) error {
 		fmt.Println(ui.Subtle("→ Generating CREATE statements..."))
 	}
 
-	statements, err := schema.Compare(dbSchema, schema.NewSchema()).GenerateMigrations(true)
+	statements, _, err := schema.Compare(dbSchema, schema.NewSchema()).GenerateMigrations(true)
 	if err != nil {
 		return fmt.Errorf("failed to generate CREATE statements: %w", err)
 	}

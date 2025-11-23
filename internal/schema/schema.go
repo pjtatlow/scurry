@@ -154,7 +154,7 @@ func LoadFromDirectory(ctx context.Context, fs afero.Fs, dirPath string, dbClien
 	// 2. Load schemas into a new database
 	rawSchema := NewSchema(allStatements...)
 	diff := Compare(rawSchema, NewSchema())
-	statements, err := diff.GenerateMigrations(false)
+	statements, _, err := diff.GenerateMigrations(false)
 	if err != nil {
 		return nil, err
 	}

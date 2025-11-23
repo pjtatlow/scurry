@@ -43,6 +43,7 @@ type Difference struct {
 	ObjectName          string
 	Description         string
 	Dangerous           bool
+	WarningMessage      string
 	IsDropCreate        bool
 	MigrationStatements []tree.Statement
 }

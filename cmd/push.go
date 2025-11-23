@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -25,7 +25,6 @@ All non-system schemas will be pushed automatically.`,
 
 var (
 	pushDryRun bool
-	pushForce  bool
 )
 
 func init() {
@@ -35,7 +34,6 @@ func init() {
 	flags.AddDefinitionDir(pushCmd)
 
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be executed without applying changes")
-	pushCmd.Flags().BoolVar(&pushForce, "force", false, "Skip confirmation prompt")
 }
 
 func push(cmd *cobra.Command, args []string) error {
@@ -86,7 +84,7 @@ func doPush(ctx context.Context) error {
 		DbClient:      client,
 		Verbose:       flags.Verbose,
 		DryRun:        pushDryRun,
-		Force:         pushForce,
+		Force:         flags.Force,
 	}
 
 	_, err = executePush(ctx, opts)
@@ -153,18 +151,21 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	}
 
 	// Get migration statements
-	statements, err := diffResult.GenerateMigrations(true)
+	statements, warnings, err := diffResult.GenerateMigrations(true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate migrations: %w", err)
 	}
 
 	if opts.Verbose {
 		fmt.Println()
-		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s):", len(statements))))
+		fmt.Println(ui.Header(fmt.Sprintf("Generated %d migration statement(s) with %d warning(s):", len(statements), len(warnings))))
 
 		for i, stmt := range statements {
 			fmt.Printf("%s %s\n\n", ui.Info(fmt.Sprintf("%d.", i+1)), ui.SqlCode(stmt))
 		}
+	}
+	for i, warning := range warnings {
+		fmt.Printf("WARNING: %s \n\n", ui.Warning(fmt.Sprintf("%d. %s", i+1, warning)))
 	}
 
 	if opts.DryRun {

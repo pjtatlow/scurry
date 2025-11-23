@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pjtatlow/scurry/flags"
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/flags"
 	"github.com/pjtatlow/scurry/internal/schema"
 )
 
@@ -302,7 +302,7 @@ func TestMigrateGenIntegration(t *testing.T) {
 	assert.True(t, diffResult.HasChanges())
 
 	// Generate migrations
-	statements, err := diffResult.GenerateMigrations(false)
+	statements, _, err := diffResult.GenerateMigrations(false)
 	require.NoError(t, err)
 	assert.NotEmpty(t, statements)
 

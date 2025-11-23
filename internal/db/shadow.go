@@ -12,7 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/util/uuid"
 
-	"github.com/pjtatlow/scurry/flags"
+	"github.com/pjtatlow/scurry/internal/flags"
 )
 
 var (

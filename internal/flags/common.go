@@ -8,6 +8,7 @@ import (
 
 var (
 	Verbose       bool
+	Force         bool
 	MigrationDir  string
 	DefinitionDir string
 	DbUrl         string
@@ -15,6 +16,10 @@ var (
 
 func AddVerbose(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVarP(&Verbose, "verbose", "v", false, "Enable verbose output")
+}
+
+func AddForce(cmd *cobra.Command) {
+	cmd.PersistentFlags().BoolVar(&Force, "force", false, "Do not prompt user for confirmation or input")
 }
 
 func AddMigrationDir(cmd *cobra.Command) {
