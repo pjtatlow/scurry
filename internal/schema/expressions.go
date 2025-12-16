@@ -113,6 +113,15 @@ func (v *exprVisitor) visitNode(expr tree.Expr) {
 		if name, ok := expr.Func.FunctionReference.(*tree.UnresolvedName); ok {
 			v.visitNode(name)
 		}
+		// Handle sequence functions (nextval, setval, currval) - extract sequence name from first argument
+		funcName := strings.ToLower(expr.Func.String())
+		if funcName == "nextval" || funcName == "setval" || funcName == "currval" {
+			if len(expr.Exprs) > 0 {
+				if seqName := extractSequenceName(expr.Exprs[0]); seqName != "" {
+					v.deps.Add(seqName)
+				}
+			}
+		}
 	case *tree.IfErrExpr:
 	case *tree.IfExpr:
 	case *tree.IndirectionExpr:
@@ -156,4 +165,42 @@ func getResolvableTypeReferenceDepName(name tree.ResolvableTypeReference) (strin
 	default:
 		return "", false
 	}
+}
+
+// extractSequenceName extracts the sequence name from an argument to nextval/setval/currval.
+// The argument can be a string literal ('seq_name') or a regclass cast ('seq_name'::regclass).
+// Returns the fully qualified sequence name (schema.name) or empty string if not extractable.
+func extractSequenceName(expr tree.Expr) string {
+	var seqName string
+
+	// Handle direct string literal: nextval('seq_name')
+	if str, ok := expr.(*tree.DString); ok {
+		seqName = string(*str)
+	}
+	// Handle string constant: nextval('seq_name') parsed differently
+	if str, ok := expr.(*tree.StrVal); ok {
+		seqName = str.RawString()
+	}
+	// Handle regclass cast: nextval('seq_name'::regclass)
+	if cast, ok := expr.(*tree.CastExpr); ok {
+		if str, ok := cast.Expr.(*tree.DString); ok {
+			seqName = string(*str)
+		}
+		if str, ok := cast.Expr.(*tree.StrVal); ok {
+			seqName = str.RawString()
+		}
+	}
+
+	if seqName == "" {
+		return ""
+	}
+
+	// Parse the sequence name - it might be qualified (schema.name) or unqualified (name)
+	parts := strings.Split(seqName, ".")
+	if len(parts) == 1 {
+		// Unqualified name - assume public schema
+		return "public." + seqName
+	}
+	// Already qualified
+	return seqName
 }

@@ -125,23 +125,23 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		}
 	}
 
-	// Collect all of the statements in a set, making sure dependencies are put in first.
-	// Then convert them into a big list of strings.
-	orderedStatements := set.New[*migrationStatement]()
-	for _, migration := range statements {
-		if orderedStatements.Contains(migration) {
-			continue
-		}
-		result, err := exploreDeps(migration, set.New[*migrationStatement]())
-		if err != nil {
-			return nil, nil, err
-		}
-		orderedStatements = orderedStatements.Union(result)
+	// Compute topological levels and sort within each level for deterministic output.
+	// Level 0: statements with no dependencies on other statements being created
+	// Level N: statements whose maximum dependency level is N-1
+	// Within each level, statements are sorted alphabetically by their SQL representation.
+	levels, err := computeLevels(statements)
+	if err != nil {
+		return nil, nil, err
+	}
 
+	// Flatten levels into ordered list
+	orderedStatements := make([]*migrationStatement, 0, len(statements))
+	for _, level := range levels {
+		orderedStatements = append(orderedStatements, level...)
 	}
 
 	ddl := make([]string, 0)
-	for migration := range orderedStatements.Values() {
+	for _, migration := range orderedStatements {
 		var s string
 		var err error
 		if pretty {
@@ -157,30 +157,89 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	return ddl, warnings, nil
 }
 
-func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatement]) (set.Set[*migrationStatement], error) {
-	result := set.New[*migrationStatement]()
-	if pending.Contains(migration) {
-		pending := slices.Collect(pending.Values())
+// computeLevels performs a topological sort and groups statements into levels.
+// Level 0 contains statements with no dependencies, Level N contains statements
+// whose maximum dependency level is N-1. Within each level, statements are sorted
+// alphabetically by their SQL representation for deterministic output.
+func computeLevels(statements []*migrationStatement) ([][]*migrationStatement, error) {
+	levels := make(map[*migrationStatement]int)
 
-		parts := make([]string, 0, len(pending)+1)
-		for _, m := range pending {
-			parts = append(parts, ui.SqlCode(m.stmt.String()))
+	// Recursive function to compute level with cycle detection
+	var computeLevel func(stmt *migrationStatement, pending set.Set[*migrationStatement]) (int, error)
+	computeLevel = func(stmt *migrationStatement, pending set.Set[*migrationStatement]) (int, error) {
+		// Check for cached result
+		if level, ok := levels[stmt]; ok {
+			return level, nil
 		}
-		parts = append(parts, ui.SqlCode(migration.stmt.String()))
 
-		return nil, fmt.Errorf("circular dependency detected\n\n%s", strings.Join(parts, fmt.Sprintf("\n\n%s\n\n", ui.Warning("REQUIRES"))))
+		// Check for circular dependency
+		if pending.Contains(stmt) {
+			pendingSlice := slices.Collect(pending.Values())
+			parts := make([]string, 0, len(pendingSlice)+1)
+			for _, m := range pendingSlice {
+				parts = append(parts, ui.SqlCode(m.stmt.String()))
+			}
+			parts = append(parts, ui.SqlCode(stmt.stmt.String()))
+			return -1, fmt.Errorf("circular dependency detected\n\n%s", strings.Join(parts, fmt.Sprintf("\n\n%s\n\n", ui.Warning("REQUIRES"))))
+		}
+
+		// No dependencies = level 0
+		if stmt.requires.Size() == 0 {
+			levels[stmt] = 0
+			return 0, nil
+		}
+
+		// Compute max dependency level
+		pending.Add(stmt)
+		maxDepLevel := -1
+		for dep := range stmt.requires.Values() {
+			depLevel, err := computeLevel(dep, pending)
+			if err != nil {
+				return -1, err
+			}
+			if depLevel > maxDepLevel {
+				maxDepLevel = depLevel
+			}
+		}
+		pending.Remove(stmt)
+
+		level := maxDepLevel + 1
+		levels[stmt] = level
+		return level, nil
 	}
 
-	pending.Add(migration)
-	for dependency := range migration.requires.Values() {
-		other, err := exploreDeps(dependency, pending)
+	// Compute level for all statements
+	maxLevel := 0
+	for _, stmt := range statements {
+		level, err := computeLevel(stmt, set.New[*migrationStatement]())
 		if err != nil {
 			return nil, err
 		}
-		result = result.Union(other)
+		if level > maxLevel {
+			maxLevel = level
+		}
 	}
-	pending.Remove(migration)
-	result.Add(migration)
+
+	// Handle empty statements case
+	if len(statements) == 0 {
+		return [][]*migrationStatement{}, nil
+	}
+
+	// Group statements by level
+	result := make([][]*migrationStatement, maxLevel+1)
+	for i := range result {
+		result[i] = make([]*migrationStatement, 0)
+	}
+	for stmt, level := range levels {
+		result[level] = append(result[level], stmt)
+	}
+
+	// Sort each level alphabetically by SQL string for determinism
+	for i := range result {
+		slices.SortFunc(result[i], func(a, b *migrationStatement) int {
+			return strings.Compare(a.stmt.String(), b.stmt.String())
+		})
+	}
 
 	return result, nil
 }

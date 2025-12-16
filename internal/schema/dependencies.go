@@ -79,13 +79,22 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 
 func addColumnDeps(d *tree.ColumnTableDef, deps set.Set[string]) {
 	if d.Computed.Computed {
-		deps = deps.Union(getExprDeps(d.Computed.Expr))
+		for dep := range getExprDeps(d.Computed.Expr).Values() {
+			deps.Add(dep)
+		}
 	}
 	if d.DefaultExpr.Expr != nil {
-		deps = deps.Union(getExprDeps(d.DefaultExpr.Expr))
+		for dep := range getExprDeps(d.DefaultExpr.Expr).Values() {
+			deps.Add(dep)
+		}
 	}
 	if name, ok := getResolvableTypeReferenceDepName(d.Type); ok {
 		deps.Add(name)
+	}
+	// Handle inline foreign key references (e.g., col INT REFERENCES other_table(id))
+	if d.References.Table != nil {
+		schema, table := getTableName(*d.References.Table)
+		deps.Add(fmt.Sprintf("%s.%s", schema, table))
 	}
 }
 

@@ -509,3 +509,150 @@ func TestDeterministicOrdering(t *testing.T) {
 		}
 	}
 }
+
+func TestDeterministicOrderingWithDependencies(t *testing.T) {
+	// Test that tables with foreign key dependencies are ordered correctly:
+	// - Dependencies must come before dependents
+	// - Within the same "layer" (no dependencies between them), tables are sorted alphabetically
+	//
+	// Schema:
+	// - zebra: no dependencies (layer 0)
+	// - mango: no dependencies (layer 0)
+	// - apple: depends on zebra (layer 1)
+	// - banana: depends on mango (layer 1)
+	// - cherry: depends on apple AND banana (layer 2)
+	//
+	// Expected order:
+	// Layer 0: mango, zebra (alphabetical)
+	// Layer 1: apple, banana (alphabetical)
+	// Layer 2: cherry
+	localTables := []string{
+		"CREATE TABLE cherry (id INT PRIMARY KEY, apple_id INT REFERENCES apple(id), banana_id INT REFERENCES banana(id))",
+		"CREATE TABLE zebra (id INT PRIMARY KEY)",
+		"CREATE TABLE apple (id INT PRIMARY KEY, zebra_id INT REFERENCES zebra(id))",
+		"CREATE TABLE banana (id INT PRIMARY KEY, mango_id INT REFERENCES mango(id))",
+		"CREATE TABLE mango (id INT PRIMARY KEY)",
+	}
+
+	local := &Schema{
+		Tables: make([]ObjectSchema[*tree.CreateTable], 0),
+	}
+	for _, sql := range localTables {
+		statements, _ := parser.Parse(sql)
+		for _, stmt := range statements {
+			if ct, ok := stmt.AST.(*tree.CreateTable); ok {
+				local.Tables = append(local.Tables, ObjectSchema[*tree.CreateTable]{
+					Name:   ct.Table.ObjectName.String(),
+					Schema: "public",
+					Ast:    ct,
+				})
+			}
+		}
+	}
+
+	remote := &Schema{}
+
+	// Run comparison multiple times and verify consistent ordering
+	var firstResult []string
+	for i := 0; i < 10; i++ {
+		result := Compare(local, remote)
+		migrations, _, err := result.GenerateMigrations(false)
+		if err != nil {
+			t.Fatalf("GenerateMigrations() error: %v", err)
+		}
+
+		if firstResult == nil {
+			firstResult = migrations
+			// Verify layer-based ordering with alphabetical sort within layers
+			if len(migrations) != 5 {
+				t.Fatalf("expected 5 migrations, got %d: %v", len(migrations), migrations)
+			}
+			// Layer 0: mango, zebra (alphabetical, no dependencies)
+			// Layer 1: apple, banana (alphabetical, depend on layer 0)
+			// Layer 2: cherry (depends on layer 1)
+			expectedOrder := []string{"mango", "zebra", "apple", "banana", "cherry"}
+			for j, want := range expectedOrder {
+				if !strings.Contains(migrations[j], want) {
+					t.Errorf("migration[%d] = %q, want it to contain %q\nFull order: %v", j, migrations[j], want, migrations)
+				}
+			}
+		} else {
+			// Verify same order on subsequent runs
+			for j := range migrations {
+				if migrations[j] != firstResult[j] {
+					t.Errorf("run %d: migration[%d] = %q, want %q", i, j, migrations[j], firstResult[j])
+				}
+			}
+		}
+	}
+}
+
+func TestDeterministicOrderingWithEnumType(t *testing.T) {
+	// Test that tables using custom enum types are ordered correctly:
+	// CREATE TYPE must come before CREATE TABLE that uses it
+	sqls := []string{
+		`CREATE TYPE status AS ENUM ('active', 'inactive')`,
+		`CREATE TABLE users (id INT PRIMARY KEY, name TEXT NOT NULL, status status NOT NULL DEFAULT 'active')`,
+	}
+
+	var stmts []tree.Statement
+	for _, sql := range sqls {
+		statements, _ := parser.Parse(sql)
+		for _, stmt := range statements {
+			stmts = append(stmts, stmt.AST)
+		}
+	}
+
+	rawSchema := NewSchema(stmts...)
+	diff := Compare(rawSchema, NewSchema())
+	migrations, _, err := diff.GenerateMigrations(false)
+	if err != nil {
+		t.Fatalf("GenerateMigrations() error: %v", err)
+	}
+
+	// The CREATE TYPE should come before CREATE TABLE
+	if len(migrations) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(migrations))
+	}
+	if !strings.Contains(migrations[0], "CREATE TYPE") {
+		t.Errorf("expected first migration to be CREATE TYPE, got: %s", migrations[0])
+	}
+	if !strings.Contains(migrations[1], "CREATE TABLE") {
+		t.Errorf("expected second migration to be CREATE TABLE, got: %s", migrations[1])
+	}
+}
+
+func TestDeterministicOrderingWithSequence(t *testing.T) {
+	// Test that tables using sequences in default values are ordered correctly:
+	// CREATE SEQUENCE must come before CREATE TABLE that uses nextval()
+	sqls := []string{
+		`CREATE SEQUENCE user_id_seq`,
+		`CREATE TABLE users (id INT PRIMARY KEY DEFAULT nextval('user_id_seq'), name TEXT NOT NULL)`,
+	}
+
+	var stmts []tree.Statement
+	for _, sql := range sqls {
+		statements, _ := parser.Parse(sql)
+		for _, stmt := range statements {
+			stmts = append(stmts, stmt.AST)
+		}
+	}
+
+	rawSchema := NewSchema(stmts...)
+	diff := Compare(rawSchema, NewSchema())
+	migrations, _, err := diff.GenerateMigrations(false)
+	if err != nil {
+		t.Fatalf("GenerateMigrations() error: %v", err)
+	}
+
+	// The CREATE SEQUENCE should come before CREATE TABLE
+	if len(migrations) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(migrations))
+	}
+	if !strings.Contains(migrations[0], "CREATE SEQUENCE") {
+		t.Errorf("expected first migration to be CREATE SEQUENCE, got: %s", migrations[0])
+	}
+	if !strings.Contains(migrations[1], "CREATE TABLE") {
+		t.Errorf("expected second migration to be CREATE TABLE, got: %s", migrations[1])
+	}
+}
