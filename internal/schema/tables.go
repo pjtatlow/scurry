@@ -22,7 +22,8 @@ func compareTables(local, remote *Schema) []Difference {
 	}
 
 	// Find added and modified tables
-	for name, localTable := range localTables {
+	for _, name := range sortedKeys(localTables) {
+		localTable := localTables[name]
 		remoteTable, existsInRemote := remoteTables[name]
 		if !existsInRemote {
 			// Table added - create it
@@ -40,7 +41,8 @@ func compareTables(local, remote *Schema) []Difference {
 	}
 
 	// Find removed tables
-	for name, remoteTable := range remoteTables {
+	for _, name := range sortedKeys(remoteTables) {
+		remoteTable := remoteTables[name]
 		if _, existsInLocal := localTables[name]; !existsInLocal {
 			// Table removed - drop it
 			drop := &tree.DropTable{

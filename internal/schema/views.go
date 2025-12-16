@@ -22,7 +22,8 @@ func compareViews(local, remote *Schema) []Difference {
 	}
 
 	// Find added and modified views
-	for name, localView := range localViews {
+	for _, name := range sortedKeys(localViews) {
+		localView := localViews[name]
 		remoteView, existsInRemote := remoteViews[name]
 		if !existsInRemote {
 			// View added - create it
@@ -54,7 +55,8 @@ func compareViews(local, remote *Schema) []Difference {
 	}
 
 	// Find removed views
-	for name, remoteView := range remoteViews {
+	for _, name := range sortedKeys(remoteViews) {
+		remoteView := remoteViews[name]
 		if _, existsInLocal := localViews[name]; !existsInLocal {
 			// View removed - drop it
 			drop := &tree.DropView{

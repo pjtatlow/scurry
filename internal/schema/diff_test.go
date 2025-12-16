@@ -452,3 +452,60 @@ func TestComparisonResult_Summary(t *testing.T) {
 		})
 	}
 }
+
+func TestDeterministicOrdering(t *testing.T) {
+	// Create tables in non-alphabetical order
+	localTables := []string{
+		"CREATE TABLE zebra (id INT PRIMARY KEY)",
+		"CREATE TABLE apple (id INT PRIMARY KEY)",
+		"CREATE TABLE mango (id INT PRIMARY KEY)",
+	}
+
+	local := &Schema{
+		Tables: make([]ObjectSchema[*tree.CreateTable], 0),
+	}
+	for _, sql := range localTables {
+		statements, _ := parser.Parse(sql)
+		for _, stmt := range statements {
+			if ct, ok := stmt.AST.(*tree.CreateTable); ok {
+				local.Tables = append(local.Tables, ObjectSchema[*tree.CreateTable]{
+					Name:   ct.Table.ObjectName.String(),
+					Schema: "public",
+					Ast:    ct,
+				})
+			}
+		}
+	}
+
+	remote := &Schema{}
+
+	// Run comparison multiple times and verify consistent ordering
+	var firstResult []string
+	for i := 0; i < 10; i++ {
+		result := Compare(local, remote)
+		migrations, _, err := result.GenerateMigrations(false)
+		if err != nil {
+			t.Fatalf("GenerateMigrations() error: %v", err)
+		}
+
+		if firstResult == nil {
+			firstResult = migrations
+			// Verify alphabetical order: apple, mango, zebra
+			if len(migrations) != 3 {
+				t.Fatalf("expected 3 migrations, got %d", len(migrations))
+			}
+			for j, want := range []string{"apple", "mango", "zebra"} {
+				if !strings.Contains(migrations[j], want) {
+					t.Errorf("migration[%d] = %q, want it to contain %q", j, migrations[j], want)
+				}
+			}
+		} else {
+			// Verify same order on subsequent runs
+			for j := range migrations {
+				if migrations[j] != firstResult[j] {
+					t.Errorf("run %d: migration[%d] = %q, want %q", i, j, migrations[j], firstResult[j])
+				}
+			}
+		}
+	}
+}

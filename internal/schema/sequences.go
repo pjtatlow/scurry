@@ -22,7 +22,8 @@ func compareSequences(local, remote *Schema) []Difference {
 	}
 
 	// Find added and modified sequences
-	for name, localSeq := range localSequences {
+	for _, name := range sortedKeys(localSequences) {
+		localSeq := localSequences[name]
 		remoteSeq, existsInRemote := remoteSequences[name]
 		if !existsInRemote {
 			// Sequence added - create it
@@ -52,7 +53,8 @@ func compareSequences(local, remote *Schema) []Difference {
 	}
 
 	// Find removed sequences
-	for name, remoteSeq := range remoteSequences {
+	for _, name := range sortedKeys(remoteSequences) {
+		remoteSeq := remoteSequences[name]
 		if _, existsInLocal := localSequences[name]; !existsInLocal {
 			// Sequence removed - drop it
 			drop := &tree.DropSequence{

@@ -23,7 +23,8 @@ func compareTypes(local, remote *Schema) []Difference {
 	}
 
 	// Find added and modified types
-	for name, localType := range localTypes {
+	for _, name := range sortedKeys(localTypes) {
+		localType := localTypes[name]
 		remoteType, existsInRemote := remoteTypes[name]
 		if !existsInRemote {
 			// Type added - create it
@@ -46,7 +47,8 @@ func compareTypes(local, remote *Schema) []Difference {
 	}
 
 	// Find removed types
-	for name, remoteType := range remoteTypes {
+	for _, name := range sortedKeys(remoteTypes) {
+		remoteType := remoteTypes[name]
 		if _, existsInLocal := localTypes[name]; !existsInLocal {
 			// Type removed - drop it
 			drop := tree.DropType{

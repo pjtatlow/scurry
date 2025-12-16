@@ -49,7 +49,8 @@ func compareRoutines(local, remote *Schema) []Difference {
 	}
 
 	// Find added and modified routines
-	for name, localRoutine := range localRoutines {
+	for _, name := range sortedKeys(localRoutines) {
+		localRoutine := localRoutines[name]
 		remoteRoutine, existsInRemote := remoteRoutines[name]
 		if !existsInRemote {
 			// Routine added - create it
@@ -77,7 +78,8 @@ func compareRoutines(local, remote *Schema) []Difference {
 	}
 
 	// Find removed routines
-	for name, routine := range remoteRoutines {
+	for _, name := range sortedKeys(remoteRoutines) {
+		routine := remoteRoutines[name]
 		if _, existsInLocal := localRoutines[name]; !existsInLocal {
 			// Routine removed - drop it
 			drop := &tree.DropRoutine{
