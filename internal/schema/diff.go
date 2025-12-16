@@ -39,13 +39,14 @@ const (
 
 // Difference represents a single schema difference
 type Difference struct {
-	Type                DiffType
-	ObjectName          string
-	Description         string
-	Dangerous           bool
-	WarningMessage      string
-	IsDropCreate        bool
-	MigrationStatements []tree.Statement
+	Type                 DiffType
+	ObjectName           string
+	Description          string
+	Dangerous            bool
+	WarningMessage       string
+	IsDropCreate         bool
+	MigrationStatements  []tree.Statement
+	OriginalDependencies set.Set[string] // For DROP ordering: what the dropped object depended on
 }
 
 // ComparisonResult holds all differences between two schemas

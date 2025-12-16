@@ -48,12 +48,14 @@ func compareTables(local, remote *Schema) []Difference {
 				IfExists:     true,
 				DropBehavior: tree.DropRestrict,
 			}
+			originalDeps := getCreateTableDependencies(remoteTable.Ast)
 			diffs = append(diffs, Difference{
-				Type:                DiffTypeTableRemoved,
-				ObjectName:          name,
-				Description:         fmt.Sprintf("Table '%s' removed", name),
-				Dangerous:           true,
-				MigrationStatements: []tree.Statement{drop},
+				Type:                 DiffTypeTableRemoved,
+				ObjectName:           name,
+				Description:          fmt.Sprintf("Table '%s' removed", name),
+				Dangerous:            true,
+				MigrationStatements:  []tree.Statement{drop},
+				OriginalDependencies: originalDeps,
 			})
 		}
 	}

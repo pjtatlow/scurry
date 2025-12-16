@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
@@ -239,6 +240,143 @@ func TestCompareRoutines(t *testing.T) {
 					}
 					descMatches[desc]--
 				}
+			}
+		})
+	}
+}
+
+// Helper function to create a schema with both types and tables
+func createSchemaWithTypesAndTables(types []string, tables []string) *Schema {
+	s := &Schema{
+		Types:  make([]ObjectSchema[*tree.CreateType], 0),
+		Tables: make([]ObjectSchema[*tree.CreateTable], 0),
+	}
+
+	for _, typeSQL := range types {
+		statements, err := parser.Parse(typeSQL)
+		if err != nil {
+			panic(err)
+		}
+		for _, stmt := range statements {
+			if createType, ok := stmt.AST.(*tree.CreateType); ok {
+				schemaName := "public"
+				if createType.TypeName.HasExplicitSchema() {
+					schemaName = createType.TypeName.Schema()
+				}
+				typeName := createType.TypeName.Object()
+
+				s.Types = append(s.Types, ObjectSchema[*tree.CreateType]{
+					Name:   typeName,
+					Schema: schemaName,
+					Ast:    createType,
+				})
+			}
+		}
+	}
+
+	for _, tableSQL := range tables {
+		statements, err := parser.Parse(tableSQL)
+		if err != nil {
+			panic(err)
+		}
+		for _, stmt := range statements {
+			if createTable, ok := stmt.AST.(*tree.CreateTable); ok {
+				schemaName := "public"
+				if createTable.Table.ExplicitSchema {
+					schemaName = createTable.Table.SchemaName.String()
+				}
+				tableName := createTable.Table.ObjectName.String()
+
+				s.Tables = append(s.Tables, ObjectSchema[*tree.CreateTable]{
+					Name:   tableName,
+					Schema: schemaName,
+					Ast:    createTable,
+				})
+			}
+		}
+	}
+
+	return s
+}
+
+func TestMigrationOrderingDropTableBeforeDropType(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteTypes  []string
+		remoteTables []string
+		localTypes   []string
+		localTables  []string
+		// wantOrder specifies substrings that must appear in order in the migration output
+		wantOrder []string
+	}{
+		{
+			name:        "drop table before drop enum it uses",
+			remoteTypes: []string{"CREATE TYPE status AS ENUM ('active', 'inactive')"},
+			remoteTables: []string{
+				"CREATE TABLE users (id INT PRIMARY KEY, status status NOT NULL)",
+			},
+			localTypes:  []string{},
+			localTables: []string{},
+			wantOrder:   []string{"DROP TABLE", "users", "DROP TYPE", "status"},
+		},
+		{
+			name:        "drop table before drop enum - multiple tables using same enum",
+			remoteTypes: []string{"CREATE TYPE priority AS ENUM ('low', 'medium', 'high')"},
+			remoteTables: []string{
+				"CREATE TABLE tasks (id INT PRIMARY KEY, priority priority NOT NULL)",
+				"CREATE TABLE tickets (id INT PRIMARY KEY, priority priority NOT NULL)",
+			},
+			localTypes:  []string{},
+			localTables: []string{},
+			// Both DROP TABLEs should come before DROP TYPE
+			wantOrder: []string{"DROP TABLE", "DROP TABLE", "DROP TYPE", "priority"},
+		},
+		{
+			name: "drop tables before drop enums - multiple enums",
+			remoteTypes: []string{
+				"CREATE TYPE status AS ENUM ('active', 'inactive')",
+				"CREATE TYPE role AS ENUM ('admin', 'user')",
+			},
+			remoteTables: []string{
+				"CREATE TABLE users (id INT PRIMARY KEY, status status NOT NULL, role role NOT NULL)",
+			},
+			localTypes:  []string{},
+			localTables: []string{},
+			// DROP TABLE should come before both DROP TYPEs
+			wantOrder: []string{"DROP TABLE", "users", "DROP TYPE"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(tt.localTypes, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(tt.remoteTypes, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			// Join all migrations into a single string to check ordering
+			allDDL := strings.Join(migrations, "\n")
+
+			// Verify that wantOrder substrings appear in the correct order
+			lastIndex := -1
+			for _, want := range tt.wantOrder {
+				index := strings.Index(allDDL[lastIndex+1:], want)
+				if index == -1 {
+					t.Errorf("expected %q to appear in migration output after position %d.\nGot:\n%s", want, lastIndex, allDDL)
+					break
+				}
+				// Adjust index to be relative to the full string
+				index = lastIndex + 1 + index
+				lastIndex = index
 			}
 		})
 	}
