@@ -32,6 +32,10 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	// Multiple statements can provide the same name, like functions with overloads
 	providers := make(dependencyMap)
 
+	// For reverse dependency resolution when dropping objects
+	dropStatements := make(dependencyMap)
+	originalDependencies := make(map[*migrationStatement]set.Set[string])
+
 	// Dropping the schema has to come last, save them for the end
 	dropSchemaStmts := make([]*migrationStatement, 0)
 	for _, difference := range r.Differences {
@@ -56,6 +60,38 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 			} else {
 				statements = append(statements, stmt)
 			}
+
+			if difference.OriginalDependencies != nil && difference.OriginalDependencies.Size() > 0 {
+				originalDependencies[stmt] = difference.OriginalDependencies
+			}
+			switch d := ddl.(type) {
+			case *tree.DropType:
+				for _, name := range d.Names {
+					schemaName, objectName := getObjectName(name)
+					dropStatements.add(schemaName+"."+objectName, stmt)
+				}
+			case *tree.DropTable:
+				for _, name := range d.Names {
+					schemaName, tableName := getTableName(name)
+					dropStatements.add(schemaName+"."+tableName, stmt)
+				}
+			case *tree.DropView:
+				for _, name := range d.Names {
+					schemaName, viewName := getTableName(name)
+					dropStatements.add(schemaName+"."+viewName, stmt)
+				}
+			case *tree.DropSequence:
+				for _, name := range d.Names {
+					schemaName, seqName := getTableName(name)
+					dropStatements.add(schemaName+"."+seqName, stmt)
+				}
+			case *tree.DropRoutine:
+				for _, routine := range d.Routines {
+					schemaName, routineName := getRoutineName(routine.FuncName)
+					dropStatements.add(schemaName+"."+routineName, stmt)
+				}
+			}
+
 			prev = stmt
 		}
 	}
@@ -74,6 +110,17 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		for name := range getDependencyNames(migration.stmt).Values() {
 			if others, ok := providers[name]; ok {
 				migration.requires = migration.requires.Union(others)
+			}
+		}
+	}
+
+	// Add reverse dependencies for DROP statements so we drop dependent objects first
+	for dropStmt, origDeps := range originalDependencies {
+		for depName := range origDeps.Values() {
+			if stmts, ok := dropStatements[depName]; ok {
+				for stmt := range stmts.Values() {
+					stmt.requires.Add(dropStmt)
+				}
 			}
 		}
 	}
