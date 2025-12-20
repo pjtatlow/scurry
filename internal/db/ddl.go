@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cockroachdb/cockroach-go/v2/crdb"
@@ -117,13 +118,19 @@ func queryAndScanCreateStatements(
 
 // ExecuteInTransaction executes multiple statements in a transaction
 func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error {
-	return crdb.ExecuteTx(ctx, c.db, &sql.TxOptions{}, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
-		if err != nil {
-			return fmt.Errorf("failed to set autocommit_before_ddl: %w", err)
-		}
+	for chunk := range slices.Chunk(statements, 50) {
+		if err := crdb.ExecuteTx(ctx, c.db, &sql.TxOptions{}, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
+			if err != nil {
+				return fmt.Errorf("failed to set autocommit_before_ddl: %w", err)
+			}
 
-		_, err = tx.ExecContext(ctx, strings.Join(statements, ";"))
-		return err
-	})
+			_, err = tx.ExecContext(ctx, strings.Join(chunk, ";"))
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

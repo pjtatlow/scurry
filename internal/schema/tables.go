@@ -86,17 +86,12 @@ func extractTableComponents(stmt *tree.CreateTable) *tableComponents {
 			colName := d.Name.Normalize()
 			tc.columns[colName] = d
 
-		// The three types of constraints cannot be altered, only dropped and created.
-		// So we can use their string representations as keys since we don't need to match them up.
 		case *tree.ForeignKeyConstraintTableDef:
-			key := formatNode(d)
-			tc.constraints[key] = d
+			tc.constraints[d.Name.Normalize()] = d
 		case *tree.CheckConstraintTableDef:
-			key := formatNode(d)
-			tc.constraints[key] = d
+			tc.constraints[d.Name.Normalize()] = d
 		case *tree.UniqueConstraintTableDef:
-			key := formatNode(d)
-			tc.constraints[key] = d
+			tc.constraints[d.Name.Normalize()] = d
 
 		case *tree.IndexTableDef:
 			indexName := d.Name.Normalize()
@@ -131,7 +126,7 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	diffs = append(diffs, indexDiffs...)
 
 	// Compare constraints (foreign keys, check constraints, unique constraints)
-	constraintDiffs := compareCheckConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
+	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
 	diffs = append(diffs, constraintDiffs...)
 
 	// TODO: Compare column families
@@ -408,94 +403,52 @@ func compareIndexes(tableName string, tableRef tree.TableName, localIndexes, rem
 	return diffs
 }
 
-func compareCheckConstraints(tableName string, tableRef tree.TableName, localConstraints, remoteConstraints map[string]tree.ConstraintTableDef) []Difference {
+func compareConstraints(tableName string, tableRef tree.TableName, localConstraints, remoteConstraints map[string]tree.ConstraintTableDef) []Difference {
 	diffs := make([]Difference, 0)
 
-	// Find removed constraints, we may be adding the same ones back in later so we need to drop them first
-	for constraintKey, remoteConstraint := range remoteConstraints {
-		if _, existsInLocal := localConstraints[constraintKey]; !existsInLocal {
-			if uniqueConstraint, ok := remoteConstraint.(*tree.UniqueConstraintTableDef); ok && !uniqueConstraint.PrimaryKey {
-				dropIndex := &tree.DropIndex{
-					IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(uniqueConstraint.Name)}},
-					DropBehavior: tree.DropCascade,
-				}
+	// Find added constraints
+	for constraintName, localConstraint := range localConstraints {
 
+		if remoteConstraint, existsInRemote := remoteConstraints[constraintName]; existsInRemote {
+			localConstraintStr := formatNode(localConstraint)
+			remoteConstraintStr := formatNode(remoteConstraint)
+
+			if localConstraintStr != remoteConstraintStr {
 				diffs = append(diffs, Difference{
-					Type:                DiffTypeTableModified,
-					ObjectName:          tableName,
-					Description:         fmt.Sprintf("Unique index '%s.%s' removed", tableName, uniqueConstraint.Name),
-					Dangerous:           true,
-					MigrationStatements: []tree.Statement{dropIndex},
+					Type:         DiffTypeTableModified,
+					ObjectName:   tableName,
+					Description:  fmt.Sprintf("Constraint '%s' modified", constraintName),
+					Dangerous:    true,
+					IsDropCreate: true,
+					MigrationStatements: []tree.Statement{
+						removeConstraint(tableRef, remoteConstraint),
+						&tree.CommitTransaction{}, &tree.BeginTransaction{},
+						createConstraint(tableRef, localConstraint),
+					},
 				})
-			} else {
-
-				name := getConstraintName(remoteConstraint)
-				if name != "" {
-					dropConstraint := &tree.AlterTable{
-						Table: tableRef.ToUnresolvedObjectName(),
-						Cmds: tree.AlterTableCmds{
-							&tree.AlterTableDropConstraint{
-								IfExists:     true,
-								DropBehavior: tree.DropRestrict,
-								Constraint:   tree.Name(name),
-							},
-						},
-					}
-					diffs = append(diffs, Difference{
-						Type:                DiffTypeTableModified,
-						ObjectName:          tableName,
-						Description:         fmt.Sprintf("Constraint '%s.%s' removed", tableName, name),
-						Dangerous:           true,
-						MigrationStatements: []tree.Statement{dropConstraint},
-					})
-				}
 			}
+		} else {
+			createStatement := createConstraint(tableRef, localConstraint)
+			diffs = append(diffs, Difference{
+				Type:                DiffTypeTableModified,
+				ObjectName:          tableName,
+				Description:         fmt.Sprintf("Constraint '%s' added", constraintName),
+				MigrationStatements: []tree.Statement{createStatement},
+			})
 		}
 	}
 
-	// Find added constraints
-	for constraintKey, localConstraint := range localConstraints {
-		if _, existsInRemote := remoteConstraints[constraintKey]; !existsInRemote {
-			if uniqueConstraint, ok := localConstraint.(*tree.UniqueConstraintTableDef); ok && !uniqueConstraint.PrimaryKey {
-				createIndex := &tree.CreateIndex{
-					Name:             uniqueConstraint.Name,
-					Table:            tableRef,
-					Unique:           true,
-					Columns:          uniqueConstraint.Columns,
-					Storing:          uniqueConstraint.Storing,
-					Type:             uniqueConstraint.Type,
-					Sharded:          uniqueConstraint.Sharded,
-					PartitionByIndex: uniqueConstraint.PartitionByIndex,
-					StorageParams:    uniqueConstraint.StorageParams,
-					Predicate:        uniqueConstraint.Predicate,
-					Invisibility:     uniqueConstraint.Invisibility,
-				}
-				diffs = append(diffs, Difference{
-					Type:                DiffTypeTableModified,
-					ObjectName:          tableName,
-					Description:         fmt.Sprintf("Unique index '%s.%s' created", tableName, uniqueConstraint.Name),
-					MigrationStatements: []tree.Statement{createIndex},
-				})
-			} else {
-
-				createConstraint := &tree.AlterTable{
-					Table: tableRef.ToUnresolvedObjectName(),
-					Cmds: tree.AlterTableCmds{
-						&tree.AlterTableAddConstraint{
-							ConstraintDef:      localConstraint,
-							ValidationBehavior: tree.ValidationDefault, // TODO: support deferred constraints?
-						},
-					},
-				}
-				name := getConstraintName(localConstraint)
-
-				diffs = append(diffs, Difference{
-					Type:                DiffTypeTableModified,
-					ObjectName:          tableName,
-					Description:         fmt.Sprintf("Constraint '%s.%s' added", tableName, name),
-					MigrationStatements: []tree.Statement{createConstraint},
-				})
-			}
+	// Find removed constraints
+	for constraintName, remoteConstraint := range remoteConstraints {
+		if _, existsInLocal := localConstraints[constraintName]; !existsInLocal {
+			dropStatement := removeConstraint(tableRef, remoteConstraint)
+			diffs = append(diffs, Difference{
+				Type:                DiffTypeTableModified,
+				ObjectName:          tableName,
+				Description:         fmt.Sprintf("Constraint %s removed", constraintName),
+				Dangerous:           true,
+				MigrationStatements: []tree.Statement{dropStatement},
+			})
 		}
 	}
 
@@ -513,4 +466,50 @@ func getConstraintName(constraint tree.ConstraintTableDef) string {
 		name = constraint.Name.Normalize()
 	}
 	return name
+}
+
+func createConstraint(tableRef tree.TableName, constraint tree.ConstraintTableDef) tree.Statement {
+	if uniqueConstraint, ok := constraint.(*tree.UniqueConstraintTableDef); ok && !uniqueConstraint.PrimaryKey {
+		return &tree.CreateIndex{
+			Name:             uniqueConstraint.Name,
+			Table:            tableRef,
+			Unique:           true,
+			Columns:          uniqueConstraint.Columns,
+			Storing:          uniqueConstraint.Storing,
+			Type:             uniqueConstraint.Type,
+			Sharded:          uniqueConstraint.Sharded,
+			PartitionByIndex: uniqueConstraint.PartitionByIndex,
+			StorageParams:    uniqueConstraint.StorageParams,
+			Predicate:        uniqueConstraint.Predicate,
+			Invisibility:     uniqueConstraint.Invisibility,
+		}
+	}
+	return &tree.AlterTable{
+		Table: tableRef.ToUnresolvedObjectName(),
+		Cmds: tree.AlterTableCmds{
+			&tree.AlterTableAddConstraint{
+				ConstraintDef:      constraint,
+				ValidationBehavior: tree.ValidationDefault, // TODO: support deferred constraints?
+			},
+		},
+	}
+}
+
+func removeConstraint(tableRef tree.TableName, constraint tree.ConstraintTableDef) tree.Statement {
+	if uniqueConstraint, ok := constraint.(*tree.UniqueConstraintTableDef); ok && !uniqueConstraint.PrimaryKey {
+		return &tree.DropIndex{
+			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(uniqueConstraint.Name)}},
+			DropBehavior: tree.DropCascade,
+		}
+	}
+	return &tree.AlterTable{
+		Table: tableRef.ToUnresolvedObjectName(),
+		Cmds: tree.AlterTableCmds{
+			&tree.AlterTableDropConstraint{
+				IfExists:     true,
+				DropBehavior: tree.DropRestrict,
+				Constraint:   tree.Name(getConstraintName(constraint)),
+			},
+		},
+	}
 }

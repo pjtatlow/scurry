@@ -11,8 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/util/uuid"
-
-	"github.com/pjtatlow/scurry/internal/flags"
 )
 
 var (
@@ -65,7 +63,7 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		// Ensure crdbVersion is set
 		//
 		// // Hide log output from cockroachdb testserver package
-		if !flags.Verbose {
+		if showLogs := os.Getenv("COCKROACH_SHOW_LOGS"); showLogs != "true" {
 			log.SetOutput(&logOutput)
 		}
 
@@ -108,6 +106,10 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 			if len(envVars) > 0 {
 				opts = append(opts, testserver.EnvVarOpt(envVars))
 			}
+		}
+
+		if cockroachLogsDir := os.Getenv("COCKROACH_LOGS_DIR"); cockroachLogsDir != "" {
+			opts = append(opts, testserver.CockroachLogsDirOpt(cockroachLogsDir))
 		}
 
 		ts, err := testserver.NewTestServer(opts...)

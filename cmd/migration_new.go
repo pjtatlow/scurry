@@ -7,11 +7,11 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
 	"github.com/pjtatlow/scurry/internal/flags"
-	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
@@ -71,7 +71,7 @@ func doMigrationNew(ctx context.Context) error {
 		huh.NewGroup(
 			huh.NewText().
 				Title("SQL Statements").
-				Description("Enter your SQL statements (one per line)").
+				Description("Enter your SQL statements (ended with semicolons)").
 				Placeholder("CREATE TABLE example (\n  id INT PRIMARY KEY\n);").
 				Value(&sqlStatements).
 				CharLimit(10000).
@@ -80,9 +80,9 @@ func doMigrationNew(ctx context.Context) error {
 						return fmt.Errorf("SQL statements cannot be empty")
 					}
 					// Validate SQL
-					_, err := schema.ParseSQL(s)
+					_, err := parser.Parse(s)
 					if err != nil {
-						return fmt.Errorf("invalid SQL: %w", err)
+						return fmt.Errorf("failed to parse SQL: %w", err)
 					}
 					return nil
 				}),
@@ -108,7 +108,7 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	// Parse statements
-	statements, err := schema.ParseSQL(sqlStatements)
+	statements, err := parser.Parse(sqlStatements)
 	if err != nil {
 		return fmt.Errorf("failed to parse SQL: %w", err)
 	}
@@ -116,7 +116,7 @@ func doMigrationNew(ctx context.Context) error {
 	// Convert parsed statements to strings
 	var statementStrings []string
 	for _, stmt := range statements {
-		statementStrings = append(statementStrings, stmt.String())
+		statementStrings = append(statementStrings, stmt.AST.String())
 	}
 
 	if flags.Verbose {
@@ -128,9 +128,7 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	// Create migration directory and file
-	if flags.Verbose {
-		fmt.Println(ui.Subtle("→ Creating migration..."))
-	}
+	fmt.Println(ui.Subtle("→ Creating migration..."))
 
 	migrationDirName, err := createMigration(fs, migrationName, statementStrings)
 	if err != nil {
@@ -140,9 +138,7 @@ func doMigrationNew(ctx context.Context) error {
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Created migration: %s", migrationDirName)))
 
 	// Apply migrations to production schema
-	if flags.Verbose {
-		fmt.Println(ui.Subtle("→ Updating production schema..."))
-	}
+	fmt.Println(ui.Subtle("→ Updating production schema..."))
 
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statementStrings)
 	if err != nil {
@@ -157,7 +153,7 @@ func doMigrationNew(ctx context.Context) error {
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Migration created successfully! Apply it to your database with: scurry migration apply %s", migrationDirName)))
+	fmt.Println(ui.Info(("Migration created successfully!")))
 
 	return nil
 }
