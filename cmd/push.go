@@ -144,11 +144,9 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 		return &PushResult{HasChanges: false, Statements: []string{}}, nil
 	}
 
-	if opts.Verbose {
-		// Show differences
-		fmt.Println(ui.Header("\nDifferences found:"))
-		fmt.Println(diffResult.Summary())
-	}
+	// Show differences
+	fmt.Println(ui.Header("\nDifferences found:"))
+	fmt.Println(diffResult.Summary())
 
 	// Get migration statements
 	statements, warnings, err := diffResult.GenerateMigrations(true)
@@ -190,18 +188,14 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	}
 
 	// Apply migrations
-	if opts.Verbose {
-		fmt.Println()
-		fmt.Println(ui.Info("⟳ Applying migrations..."))
-	}
+	fmt.Println()
+	fmt.Println(ui.Info("⟳ Applying migrations..."))
 
 	if err := opts.DbClient.ExecuteBulkDDL(ctx, statements...); err != nil {
 		return nil, fmt.Errorf("%s: %w", ui.Error("✗ Failed to apply migrations"), err)
 	}
 
-	if opts.Verbose {
-		fmt.Println()
-		fmt.Println(ui.Success("✓ Successfully applied all migrations!"))
-	}
+	fmt.Println()
+	fmt.Println(ui.Success("✓ Successfully applied all migrations!"))
 	return &PushResult{HasChanges: true, Statements: statements}, nil
 }

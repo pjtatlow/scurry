@@ -106,12 +106,27 @@ func (v *exprVisitor) visitNode(expr tree.Expr) {
 	case *tree.DVoid:
 	case *tree.DefaultVal:
 	case *tree.FuncExpr:
-		if expr.Func.ReferenceByName != nil {
-			schema, objectName := getObjectName(expr.Func.ReferenceByName)
-			v.deps.Add(fmt.Sprintf("%s.%s", schema, objectName))
-		}
-		if name, ok := expr.Func.FunctionReference.(*tree.UnresolvedName); ok {
-			v.visitNode(name)
+		// Handle sequence functions (nextval, currval, setval) which take a sequence name as the first argument
+		// These are builtin functions, so we don't add them as dependencies - only the sequence they reference
+		funcName := strings.ToLower(expr.Func.String())
+		if funcName == "nextval" || funcName == "currval" || funcName == "setval" {
+			if len(expr.Exprs) > 0 {
+				if seqName, ok := extractSequenceName(expr.Exprs[0]); ok {
+					if strings.Contains(seqName, ".") {
+						v.deps.Add(seqName)
+					} else {
+						v.deps.Add(fmt.Sprintf("public.%s", seqName))
+					}
+				}
+			}
+		} else {
+			if expr.Func.ReferenceByName != nil {
+				schema, objectName := getObjectName(expr.Func.ReferenceByName)
+				v.deps.Add(fmt.Sprintf("%s.%s", schema, objectName))
+			}
+			if name, ok := expr.Func.FunctionReference.(*tree.UnresolvedName); ok {
+				v.visitNode(name)
+			}
 		}
 	case *tree.IfErrExpr:
 	case *tree.IfExpr:
@@ -144,6 +159,24 @@ func (v *exprVisitor) visitNode(expr tree.Expr) {
 			v.deps.Add(fmt.Sprintf("%s.%s", schema, objectName))
 		}
 	}
+}
+
+// extractSequenceName extracts a sequence name from an expression that is either
+// a raw string literal (e.g., 'myseq') or a REGCLASS cast (e.g., 'myseq'::REGCLASS)
+func extractSequenceName(expr tree.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *tree.StrVal:
+		return e.RawString(), true
+	case *tree.CastExpr:
+		if strings.ToUpper(e.Type.SQLString()) == "REGCLASS" {
+
+			// Handle 'seq_name'::REGCLASS pattern
+			if strVal, ok := e.Expr.(*tree.StrVal); ok {
+				return strVal.RawString(), true
+			}
+		}
+	}
+	return "", false
 }
 
 func getResolvableTypeReferenceDepName(name tree.ResolvableTypeReference) (string, bool) {

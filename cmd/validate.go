@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
@@ -61,9 +62,18 @@ func doValidate(ctx context.Context) error {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 
+	numColumns := 0
+	for _, table := range localSchema.Tables {
+		for _, def := range table.Ast.Defs {
+			if _, ok := def.(*tree.ColumnTableDef); ok {
+				numColumns++
+			}
+		}
+	}
+
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
-			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables with %d columns, %d types, %d routines, %d sequences, %d views locally",
+			len(localSchema.Tables), numColumns, len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
 	}
 
 	fmt.Println()

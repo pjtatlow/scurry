@@ -56,7 +56,7 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 
 		switch d := def.(type) {
 		case *tree.ColumnTableDef:
-			addColumnDeps(d, deps)
+			deps = addColumnDeps(d, deps)
 		case *tree.ForeignKeyConstraintTableDef:
 			schema, table := getTableName(d.Table)
 			if table != tableName {
@@ -77,7 +77,7 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 	return deps
 }
 
-func addColumnDeps(d *tree.ColumnTableDef, deps set.Set[string]) {
+func addColumnDeps(d *tree.ColumnTableDef, deps set.Set[string]) set.Set[string] {
 	if d.Computed.Computed {
 		deps = deps.Union(getExprDeps(d.Computed.Expr))
 	}
@@ -87,6 +87,7 @@ func addColumnDeps(d *tree.ColumnTableDef, deps set.Set[string]) {
 	if name, ok := getResolvableTypeReferenceDepName(d.Type); ok {
 		deps.Add(name)
 	}
+	return deps
 }
 
 func getCreateViewDependencies(stmt *tree.CreateView) set.Set[string] {
@@ -158,7 +159,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 	for _, cmd := range stmt.Cmds {
 		switch c := cmd.(type) {
 		case *tree.AlterTableAddColumn:
-			addColumnDeps(c.ColumnDef, deps)
+			deps = addColumnDeps(c.ColumnDef, deps)
 		case *tree.AlterTableAlterColumnType:
 			if name, ok := getResolvableTypeReferenceDepName(c.ToType); ok {
 				deps.Add(name)

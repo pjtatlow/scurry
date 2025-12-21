@@ -127,21 +127,50 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 
 	// Collect all of the statements in a set, making sure dependencies are put in first.
 	// Then convert them into a big list of strings.
-	orderedStatements := set.New[*migrationStatement]()
+	statementSet := set.New[*migrationStatement]()
 	for _, migration := range statements {
-		if orderedStatements.Contains(migration) {
+		if statementSet.Contains(migration) {
 			continue
 		}
 		result, err := exploreDeps(migration, set.New[*migrationStatement]())
 		if err != nil {
 			return nil, nil, err
 		}
-		orderedStatements = orderedStatements.Union(result)
-
+		statementSet = statementSet.Union(result)
 	}
+	orderedStatements := slices.Collect(statementSet.Values())
+
+	start := 0
+	currentChunk := set.New[*migrationStatement]()
+	for end := range orderedStatements {
+		stmt := orderedStatements[end]
+		// check if any of this statement's dependencies are in the current chunk
+		chunkHasDep := false
+		for dep := range stmt.requires.Values() {
+			if currentChunk.Contains(dep) {
+				chunkHasDep = true
+				break
+			}
+		}
+		// If this statement has no dependencies in the current chunk, add it to the current chunk
+		if !chunkHasDep {
+			currentChunk.Add(stmt)
+		} else {
+			// otherwise we need to end that chunk and make a new one
+			slices.SortFunc(orderedStatements[start:end], func(a, b *migrationStatement) int {
+				return strings.Compare(a.stmt.String(), b.stmt.String())
+			})
+			start = end
+			currentChunk = set.New[*migrationStatement]()
+			currentChunk.Add(stmt)
+		}
+	}
+	slices.SortFunc(orderedStatements[start:], func(a, b *migrationStatement) int {
+		return strings.Compare(a.stmt.String(), b.stmt.String())
+	})
 
 	ddl := make([]string, 0)
-	for migration := range orderedStatements.Values() {
+	for _, migration := range orderedStatements {
 		var s string
 		var err error
 		if pretty {
