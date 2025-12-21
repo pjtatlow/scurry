@@ -159,7 +159,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 	for _, cmd := range stmt.Cmds {
 		switch c := cmd.(type) {
 		case *tree.AlterTableAddColumn:
-			addColumnDeps(c.ColumnDef, deps)
+			deps = addColumnDeps(c.ColumnDef, deps)
 		case *tree.AlterTableAlterColumnType:
 			if name, ok := getResolvableTypeReferenceDepName(c.ToType); ok {
 				deps.Add(name)
