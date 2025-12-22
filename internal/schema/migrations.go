@@ -125,6 +125,10 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		}
 	}
 
+	slices.SortFunc(statements, func(a, b *migrationStatement) int {
+		return strings.Compare(a.stmt.String(), b.stmt.String())
+	})
+
 	// Collect all of the statements in a set, making sure dependencies are put in first.
 	// Then convert them into a big list of strings.
 	statementSet := set.New[*migrationStatement]()
