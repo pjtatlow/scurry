@@ -97,6 +97,7 @@ func getProvidedNames(stmt tree.Statement) set.Set[string] {
 				case *tree.AlterTableDropConstraint:
 				case *tree.AlterTableSetVisible:
 				case *tree.AlterTableSetOnUpdate:
+				case *tree.AlterTableAlterPrimaryKey:
 
 				default:
 					panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))

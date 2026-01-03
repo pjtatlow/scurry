@@ -405,6 +405,41 @@ func compareIndexes(tableName string, tableRef tree.TableName, localIndexes, rem
 
 func compareConstraints(tableName string, tableRef tree.TableName, localConstraints, remoteConstraints map[string]tree.ConstraintTableDef) []Difference {
 	diffs := make([]Difference, 0)
+	localPrimaryKey := findPrimaryKey(localConstraints)
+	remotePrimaryKey := findPrimaryKey(remoteConstraints)
+	if localPrimaryKey == nil {
+		panic(fmt.Sprintf("Could not find primary key for table %s in local constraints", tableName))
+	}
+	if remotePrimaryKey == nil {
+		panic(fmt.Sprintf("Could not find primary key for table %s in remote constraints", tableName))
+	}
+	localPrimaryKeyStr := formatNode(localPrimaryKey)
+	remotePrimaryKeyStr := formatNode(remotePrimaryKey)
+
+	if localPrimaryKeyStr != remotePrimaryKeyStr {
+		diffs = append(diffs, Difference{
+			Type:         DiffTypeTableModified,
+			ObjectName:   tableName,
+			Description:  "Primary key modified",
+			Dangerous:    true,
+			IsDropCreate: false,
+			MigrationStatements: []tree.Statement{
+				&tree.CommitTransaction{}, &tree.BeginTransaction{},
+				&tree.AlterTable{
+					Table: tableRef.ToUnresolvedObjectName(),
+					Cmds: tree.AlterTableCmds{
+						&tree.AlterTableDropConstraint{
+							Constraint: remotePrimaryKey.Name,
+						},
+						&tree.AlterTableAddConstraint{
+							ConstraintDef: localPrimaryKey,
+						},
+					},
+				},
+				&tree.CommitTransaction{}, &tree.BeginTransaction{},
+			},
+		})
+	}
 
 	// Find added constraints
 	for constraintName, localConstraint := range localConstraints {
@@ -512,4 +547,16 @@ func removeConstraint(tableRef tree.TableName, constraint tree.ConstraintTableDe
 			},
 		},
 	}
+}
+
+// Finds the primary key constraint from the given constraints map.
+// Removes it if it's found.
+func findPrimaryKey(constraints map[string]tree.ConstraintTableDef) *tree.UniqueConstraintTableDef {
+	for name, constraint := range constraints {
+		if uniqueConstraint, ok := constraint.(*tree.UniqueConstraintTableDef); ok && uniqueConstraint.PrimaryKey {
+			delete(constraints, name)
+			return uniqueConstraint
+		}
+	}
+	return nil
 }

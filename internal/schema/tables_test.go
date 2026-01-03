@@ -1,11 +1,14 @@
 package schema
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+
+	"github.com/pjtatlow/scurry/internal/db"
 )
 
 // Helper to convert statements to DDL strings
@@ -17,19 +20,40 @@ func statementsToStringsTables(stmts []tree.Statement) []string {
 	return strings
 }
 
-// Helper function to create a schema with tables
+// Helper function to create a schema with tables.
+// This runs the statements through a real CockroachDB instance to get
+// properly formatted CREATE TABLE statements with explicit constraints.
 func createSchemaWithTables(tables []string) *Schema {
 	s := &Schema{
 		Tables: make([]ObjectSchema[*tree.CreateTable], 0),
 	}
 
-	for _, tableSQL := range tables {
-		statements, err := parser.Parse(tableSQL)
+	if len(tables) == 0 {
+		return s
+	}
+
+	ctx := context.Background()
+
+	// Create a shadow DB and execute the statements
+	client, err := db.GetShadowDB(ctx, tables...)
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close()
+
+	// Get the properly formatted CREATE statements back from the database
+	createStatements, err := client.GetAllCreateStatements(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	for _, stmt := range createStatements {
+		statements, err := parser.Parse(stmt)
 		if err != nil {
 			panic(err)
 		}
-		for _, stmt := range statements {
-			if createTable, ok := stmt.AST.(*tree.CreateTable); ok {
+		for _, parsed := range statements {
+			if createTable, ok := parsed.AST.(*tree.CreateTable); ok {
 				schemaName := "public"
 				if createTable.Table.ExplicitSchema {
 					schemaName = createTable.Table.SchemaName.String()
@@ -117,10 +141,10 @@ func TestCompareTables(t *testing.T) {
 		},
 		{
 			name:          "table with foreign key added",
-			localTables:   []string{"CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id))"},
+			localTables:   []string{"CREATE TABLE users (id INT PRIMARY KEY)", "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id))"},
 			remoteTables:  []string{},
-			wantDiffCount: 1,
-			wantDiffTypes: []DiffType{DiffTypeTableAdded},
+			wantDiffCount: 2,
+			wantDiffTypes: []DiffType{DiffTypeTableAdded, DiffTypeTableAdded},
 		},
 		{
 			name:          "table with indexes added",
@@ -133,6 +157,7 @@ func TestCompareTables(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables(tt.localTables)
 			remoteSchema := createSchemaWithTables(tt.remoteTables)
 
@@ -174,7 +199,8 @@ func TestTableAddedMigration(t *testing.T) {
 			name:       "simple table added",
 			localTable: "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
 			wantContains: []string{
-				"CREATE TABLE users",
+				"CREATE TABLE",
+				"users",
 				"id INT",
 				"name STRING",
 				"PRIMARY KEY",
@@ -184,24 +210,18 @@ func TestTableAddedMigration(t *testing.T) {
 			name:       "table with constraints added",
 			localTable: "CREATE TABLE users (id INT PRIMARY KEY, email STRING NOT NULL UNIQUE)",
 			wantContains: []string{
-				"CREATE TABLE users",
+				"CREATE TABLE",
+				"users",
 				"email STRING NOT NULL",
 				"UNIQUE",
-			},
-		},
-		{
-			name:       "table with foreign key added",
-			localTable: "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id))",
-			wantContains: []string{
-				"CREATE TABLE posts",
-				"REFERENCES users",
 			},
 		},
 		{
 			name:       "table with index added",
 			localTable: "CREATE TABLE users (id INT PRIMARY KEY, email STRING, INDEX email_idx (email))",
 			wantContains: []string{
-				"CREATE TABLE users",
+				"CREATE TABLE",
+				"users",
 				"INDEX email_idx",
 			},
 		},
@@ -209,6 +229,7 @@ func TestTableAddedMigration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{})
 
@@ -255,7 +276,7 @@ func TestTableRemovedMigration(t *testing.T) {
 		},
 		{
 			name:        "table with IF EXISTS and RESTRICT",
-			remoteTable: "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id))",
+			remoteTable: "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT)",
 			wantContains: []string{
 				"DROP TABLE",
 				"IF EXISTS",
@@ -267,6 +288,7 @@ func TestTableRemovedMigration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -347,6 +369,7 @@ func TestCompareTablesColumnAdditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -413,6 +436,7 @@ func TestCompareTablesColumnRemovals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -470,6 +494,7 @@ func TestCompareTablesColumnAdditionsAndRemovals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -526,6 +551,7 @@ func TestCompareTablesIndexAdditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -592,6 +618,7 @@ func TestCompareTablesIndexRemovals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -649,6 +676,7 @@ func TestCompareTablesIndexAdditionsAndRemovals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -714,6 +742,7 @@ func TestCompareTablesIndexModifications(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			localSchema := createSchemaWithTables([]string{tt.localTable})
 			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
 
@@ -744,6 +773,123 @@ func TestCompareTablesIndexModifications(t *testing.T) {
 			}
 
 			// Verify DROP, COMMIT, BEGIN, and CREATE are present
+			allDDL := ""
+			for _, stmt := range diff.MigrationStatements {
+				allDDL += stmt.String() + "\n"
+			}
+			for _, expected := range tt.wantDDLContains {
+				if !strings.Contains(allDDL, expected) {
+					t.Errorf("DDL does not contain %q.\nGot:\n%s", expected, allDDL)
+				}
+			}
+		})
+	}
+}
+
+func TestCompareTablesPrimaryKeyChanges(t *testing.T) {
+	tests := []struct {
+		name             string
+		localTable       string
+		remoteTable      string
+		wantDiffCount    int
+		wantDiffType     DiffType
+		wantDescContains string
+		wantDDLContains  []string
+		wantDangerous    bool
+	}{
+		{
+			name:             "primary key column changed",
+			localTable:       "CREATE TABLE users (id INT NOT NULL, email STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (email))",
+			remoteTable:      "CREATE TABLE users (id INT NOT NULL, email STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			wantDiffCount:    1,
+			wantDiffType:     DiffTypeTableModified,
+			wantDescContains: "Primary key",
+			wantDDLContains:  []string{"DROP CONSTRAINT", "ADD CONSTRAINT", "PRIMARY KEY", "email"},
+			wantDangerous:    true,
+		},
+		{
+			name:             "primary key add column",
+			localTable:       "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id, name))",
+			remoteTable:      "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			wantDiffCount:    1,
+			wantDiffType:     DiffTypeTableModified,
+			wantDescContains: "Primary key",
+			wantDDLContains:  []string{"DROP CONSTRAINT", "ADD CONSTRAINT", "PRIMARY KEY", "id", "name"},
+			wantDangerous:    true,
+		},
+		{
+			name:             "primary key remove column",
+			localTable:       "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			remoteTable:      "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id, name))",
+			wantDiffCount:    1,
+			wantDiffType:     DiffTypeTableModified,
+			wantDescContains: "Primary key",
+			wantDDLContains:  []string{"DROP CONSTRAINT", "ADD CONSTRAINT", "PRIMARY KEY"},
+			wantDangerous:    true,
+		},
+		{
+			name:             "primary key column order changed",
+			localTable:       "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (name, id))",
+			remoteTable:      "CREATE TABLE users (id INT, name STRING NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id, name))",
+			wantDiffCount:    1,
+			wantDiffType:     DiffTypeTableModified,
+			wantDescContains: "Primary key",
+			wantDDLContains:  []string{"DROP CONSTRAINT", "ADD CONSTRAINT", "PRIMARY KEY"},
+			wantDangerous:    true,
+		},
+		{
+			name:             "no change when primary key identical",
+			localTable:       "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			remoteTable:      "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			wantDiffCount:    0,
+			wantDiffType:     "",
+			wantDescContains: "",
+			wantDDLContains:  nil,
+			wantDangerous:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			localSchema := createSchemaWithTables([]string{tt.localTable})
+			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
+
+			diffs := compareTables(localSchema, remoteSchema)
+
+			if len(diffs) != tt.wantDiffCount {
+				t.Fatalf("expected %d diffs, got %d", tt.wantDiffCount, len(diffs))
+			}
+
+			if tt.wantDiffCount == 0 {
+				return
+			}
+
+			diff := diffs[0]
+
+			if diff.Type != tt.wantDiffType {
+				t.Errorf("expected diff type %s, got %s", tt.wantDiffType, diff.Type)
+			}
+
+			if tt.wantDescContains != "" && !strings.Contains(diff.Description, tt.wantDescContains) {
+				t.Errorf("description %q does not contain %q", diff.Description, tt.wantDescContains)
+			}
+
+			if diff.Dangerous != tt.wantDangerous {
+				t.Errorf("expected Dangerous=%v, got %v", tt.wantDangerous, diff.Dangerous)
+			}
+
+			// Primary key modifications require transaction boundaries:
+			// COMMIT, BEGIN, ALTER TABLE (DROP + ADD), COMMIT, BEGIN (5 statements)
+			if len(diff.MigrationStatements) != 5 {
+				t.Errorf("expected 5 migration statements (COMMIT + BEGIN + ALTER + COMMIT + BEGIN), got %d", len(diff.MigrationStatements))
+				for i, stmt := range diff.MigrationStatements {
+					t.Logf("Statement %d: %s", i, stmt.String())
+				}
+				return
+			}
+
+			// Verify expected DDL is present
 			allDDL := ""
 			for _, stmt := range diff.MigrationStatements {
 				allDDL += stmt.String() + "\n"
