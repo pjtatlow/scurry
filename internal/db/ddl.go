@@ -116,9 +116,19 @@ func queryAndScanCreateStatements(
 	return results, rows.Err()
 }
 
-// ExecuteInTransaction executes multiple statements in a transaction
+// ExecuteBulkDDL executes multiple DDL statements, respecting COMMIT/BEGIN
+// transaction boundaries. Statements are grouped into chunks that are executed
+// within transactions. COMMIT and BEGIN statements in the input are used as
+// natural chunk boundaries (and are removed from execution since crdb.ExecuteTx
+// handles transaction management). If a chunk exceeds 50 statements, it is
+// further split into sub-chunks of 50.
 func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error {
-	for chunk := range slices.Chunk(statements, 50) {
+	chunks := chunkStatementsByTransaction(statements, 50)
+
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
 		if err := crdb.ExecuteTx(ctx, c.db, &sql.TxOptions{}, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
 			if err != nil {
@@ -133,4 +143,45 @@ func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error
 	}
 
 	return nil
+}
+
+// chunkStatementsByTransaction splits statements into chunks based on COMMIT/BEGIN
+// boundaries. COMMIT and BEGIN statements are removed since transaction management
+// is handled by the caller. If a chunk exceeds maxChunkSize, it is further split.
+func chunkStatementsByTransaction(statements []string, maxChunkSize int) [][]string {
+	var chunks [][]string
+	var currentChunk []string
+
+	for _, stmt := range statements {
+		normalized := strings.ToUpper(strings.TrimSpace(stmt))
+
+		// Check if this is a transaction boundary statement
+		if normalized == "COMMIT" || normalized == "COMMIT TRANSACTION" ||
+			normalized == "BEGIN" || normalized == "BEGIN TRANSACTION" {
+			// Flush current chunk if non-empty
+			if len(currentChunk) > 0 {
+				chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+				currentChunk = nil
+			}
+			continue
+		}
+
+		currentChunk = append(currentChunk, stmt)
+	}
+
+	// Don't forget the last chunk
+	if len(currentChunk) > 0 {
+		chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+	}
+
+	return chunks
+}
+
+// splitChunk splits a chunk into sub-chunks of at most maxSize statements
+func splitChunk(chunk []string, maxSize int) [][]string {
+	var result [][]string
+	for subChunk := range slices.Chunk(chunk, maxSize) {
+		result = append(result, subChunk)
+	}
+	return result
 }
