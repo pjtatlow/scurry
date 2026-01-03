@@ -118,14 +118,40 @@ func queryAndScanCreateStatements(
 
 // ExecuteBulkDDL executes multiple DDL statements, respecting COMMIT/BEGIN
 // transaction boundaries. Statements are grouped into chunks that are executed
-// within transactions. COMMIT and BEGIN statements in the input are used as
-// natural chunk boundaries (and are removed from execution since crdb.ExecuteTx
-// handles transaction management). If a chunk exceeds 50 statements, it is
-// further split into sub-chunks of 50.
+// within transactions. COMMIT/BEGIN pairs in the input signal transaction
+// boundaries (and are removed from execution since crdb.ExecuteTx handles
+// transaction management).
+//
+// A COMMIT without an immediately following BEGIN signals that the next
+// statements should run outside a transaction (needed for operations like
+// ALTER COLUMN TYPE requiring on-disk rewrite in CockroachDB). These chunks
+// are preceded by a nil marker from chunkStatementsByTransaction.
+//
+// If a chunk exceeds 50 statements, it is further split into sub-chunks.
 func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error {
 	chunks := chunkStatementsByTransaction(statements, 50)
 
-	for _, chunk := range chunks {
+	for i := 0; i < len(chunks); i++ {
+		chunk := chunks[i]
+
+		// nil chunk signals the next chunk should run without a transaction
+		if chunk == nil {
+			i++
+			if i >= len(chunks) {
+				break
+			}
+			chunk = chunks[i]
+			if len(chunk) == 0 {
+				continue
+			}
+			// Execute without transaction wrapper
+			_, err := c.db.ExecContext(ctx, strings.Join(chunk, ";"))
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
 		if len(chunk) == 0 {
 			continue
 		}
@@ -146,23 +172,69 @@ func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error
 }
 
 // chunkStatementsByTransaction splits statements into chunks based on COMMIT/BEGIN
-// boundaries. COMMIT and BEGIN statements are removed since transaction management
-// is handled by the caller. If a chunk exceeds maxChunkSize, it is further split.
+// pair boundaries. A COMMIT immediately followed by BEGIN signals a transaction
+// boundary - statements before the pair go in one chunk, statements after go in
+// another. Both COMMIT and BEGIN are removed since transaction management is
+// handled by the caller.
+//
+// A COMMIT without an immediately following BEGIN (or BEGIN without preceding
+// COMMIT) means statements in between should run outside a transaction - these
+// are placed in a chunk by themselves with a nil marker that tells ExecuteBulkDDL
+// to run them without a transaction wrapper.
+//
+// If a chunk exceeds maxChunkSize, it is further split into sub-chunks.
 func chunkStatementsByTransaction(statements []string, maxChunkSize int) [][]string {
 	var chunks [][]string
 	var currentChunk []string
+	inNonTransactionalSection := false
 
-	for _, stmt := range statements {
+	for i := 0; i < len(statements); i++ {
+		stmt := statements[i]
 		normalized := strings.ToUpper(strings.TrimSpace(stmt))
 
-		// Check if this is a transaction boundary statement
-		if normalized == "COMMIT" || normalized == "COMMIT TRANSACTION" ||
-			normalized == "BEGIN" || normalized == "BEGIN TRANSACTION" {
-			// Flush current chunk if non-empty
+		isCommit := normalized == "COMMIT" || normalized == "COMMIT TRANSACTION"
+		isBegin := normalized == "BEGIN" || normalized == "BEGIN TRANSACTION"
+
+		if isCommit {
+			// Check if next statement is BEGIN
+			nextIsBegin := false
+			if i+1 < len(statements) {
+				nextNorm := strings.ToUpper(strings.TrimSpace(statements[i+1]))
+				nextIsBegin = nextNorm == "BEGIN" || nextNorm == "BEGIN TRANSACTION"
+			}
+
+			if nextIsBegin {
+				// COMMIT/BEGIN pair - flush current chunk and skip both
+				if len(currentChunk) > 0 {
+					chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+					currentChunk = nil
+				}
+				i++ // skip the BEGIN
+				inNonTransactionalSection = false
+			} else {
+				// COMMIT without BEGIN - entering non-transactional section
+				if len(currentChunk) > 0 {
+					chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+					currentChunk = nil
+				}
+				inNonTransactionalSection = true
+			}
+			continue
+		}
+
+		if isBegin {
+			// BEGIN without preceding COMMIT - exiting non-transactional section
 			if len(currentChunk) > 0 {
-				chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+				if inNonTransactionalSection {
+					// Mark this chunk as non-transactional by prepending nil marker
+					chunks = append(chunks, nil) // nil signals non-transactional
+					chunks = append(chunks, currentChunk)
+				} else {
+					chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+				}
 				currentChunk = nil
 			}
+			inNonTransactionalSection = false
 			continue
 		}
 
@@ -171,7 +243,12 @@ func chunkStatementsByTransaction(statements []string, maxChunkSize int) [][]str
 
 	// Don't forget the last chunk
 	if len(currentChunk) > 0 {
-		chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+		if inNonTransactionalSection {
+			chunks = append(chunks, nil)
+			chunks = append(chunks, currentChunk)
+		} else {
+			chunks = append(chunks, splitChunk(currentChunk, maxChunkSize)...)
+		}
 	}
 
 	return chunks

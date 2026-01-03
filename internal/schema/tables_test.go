@@ -902,3 +902,90 @@ func TestCompareTablesPrimaryKeyChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestCompareTablesColumnTypeChangeWithIndex(t *testing.T) {
+	tests := []struct {
+		name            string
+		localTable      string
+		remoteTable     string
+		wantDDLContains []string
+	}{
+		{
+			name:        "column type change with index on column",
+			localTable:  "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL, INDEX email_idx (email))",
+			remoteTable: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL, INDEX email_idx (email))",
+			// Generates: DROP INDEX diff, ALTER COLUMN diff, CREATE INDEX diff
+			wantDDLContains: []string{"DROP INDEX", "email_idx", "ALTER COLUMN", "email", "VARCHAR", "CREATE INDEX", "email_idx"},
+		},
+		{
+			name:        "column type change with column in STORING clause",
+			localTable:  "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL, name STRING, INDEX name_idx (name) STORING (email))",
+			remoteTable: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL, name STRING, INDEX name_idx (name) STORING (email))",
+			// Generates: DROP INDEX diff, ALTER COLUMN diff, CREATE INDEX diff
+			wantDDLContains: []string{"DROP INDEX", "name_idx", "ALTER COLUMN", "email", "VARCHAR", "CREATE INDEX", "name_idx", "STORING"},
+		},
+		{
+			name:        "column type change with multiple indexes",
+			localTable:  "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL, INDEX email_idx (email), INDEX email_id_idx (email, id))",
+			remoteTable: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL, INDEX email_idx (email), INDEX email_id_idx (email, id))",
+			// Generates: DROP INDEX diff (both indexes), ALTER COLUMN diff, CREATE INDEX diffs
+			wantDDLContains: []string{"DROP INDEX", "ALTER TABLE", "ALTER COLUMN", "email", "VARCHAR", "CREATE INDEX"},
+		},
+		{
+			name:            "column type change without index",
+			localTable:      "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL)",
+			remoteTable:     "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL)",
+			wantDDLContains: []string{"ALTER COLUMN", "email", "VARCHAR"},
+		},
+		{
+			name:        "column type change with index removed",
+			localTable:  "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL)",
+			remoteTable: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL, INDEX email_idx (email))",
+			// Generates: DROP INDEX diff, ALTER COLUMN diff (no CREATE INDEX since index not in local)
+			wantDDLContains: []string{"DROP INDEX", "email_idx", "ALTER TABLE", "ALTER COLUMN", "email", "VARCHAR"},
+		},
+		{
+			name:        "multiple columns type change in same index",
+			localTable:  "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL, name VARCHAR(100) NOT NULL, INDEX combo_idx (email, name))",
+			remoteTable: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, INDEX combo_idx (email, name))",
+			// Generates: DROP INDEX diff, ALTER COLUMN diffs, CREATE INDEX diff
+			wantDDLContains: []string{"DROP INDEX", "combo_idx", "ALTER TABLE", "ALTER COLUMN", "CREATE INDEX"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			localSchema := createSchemaWithTables([]string{tt.localTable})
+			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
+
+			diffs := compareTables(localSchema, remoteSchema)
+
+			if len(diffs) == 0 {
+				t.Fatalf("expected at least 1 diff, got 0")
+			}
+
+			// Collect all DDL from all diffs
+			allDDL := ""
+			for _, diff := range diffs {
+				for _, stmt := range diff.MigrationStatements {
+					allDDL += stmt.String() + "\n"
+				}
+			}
+
+			// Verify expected DDL is present across all diffs
+			for _, expected := range tt.wantDDLContains {
+				if !strings.Contains(allDDL, expected) {
+					t.Errorf("DDL does not contain %q.\nGot:\n%s", expected, allDDL)
+				}
+			}
+
+			// Verify transaction boundaries are present when there are index drops
+			if strings.Contains(allDDL, "DROP INDEX") {
+				if !strings.Contains(allDDL, "COMMIT") || !strings.Contains(allDDL, "BEGIN") {
+					t.Errorf("expected transaction boundaries (COMMIT/BEGIN) when dropping indexes.\nGot:\n%s", allDDL)
+				}
+			}
+		})
+	}
+}
