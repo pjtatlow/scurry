@@ -198,6 +198,8 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 			if c.Expr != nil {
 				deps = deps.Union(getExprDeps(c.Expr))
 			}
+		case *tree.AlterTableAlterPrimaryKey:
+			deps = deps.Union(getIndexDependencies(stmt.Table.ToTableName(), c.Columns, tree.NameList{}))
 
 		// These have no dependencies
 		case *tree.AlterTableDropColumn:

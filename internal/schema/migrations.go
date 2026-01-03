@@ -172,6 +172,16 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	slices.SortFunc(orderedStatements[start:], func(a, b *migrationStatement) int {
 		return strings.Compare(a.stmt.String(), b.stmt.String())
 	})
+	// If we begin a transaction change, skip it
+	l := len(orderedStatements)
+	if l > 2 && isCommitBegin(orderedStatements[:2]) {
+		orderedStatements = orderedStatements[2:]
+	}
+	// If we end a transaction change, skip it
+	l = len(orderedStatements)
+	if l > 2 && isCommitBegin(orderedStatements[l-2:]) {
+		orderedStatements = orderedStatements[:l-2]
+	}
 
 	ddl := make([]string, 0)
 	for _, migration := range orderedStatements {
@@ -216,4 +226,17 @@ func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatem
 	result.Add(migration)
 
 	return result, nil
+}
+
+func isCommitBegin(stmts []*migrationStatement) bool {
+	if len(stmts) != 2 {
+		return false
+	}
+	if _, ok := stmts[0].stmt.(*tree.CommitTransaction); !ok {
+		return false
+	}
+	if _, ok := stmts[1].stmt.(*tree.BeginTransaction); !ok {
+		return false
+	}
+	return true
 }
