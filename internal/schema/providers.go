@@ -86,8 +86,12 @@ func getProvidedNames(stmt tree.Statement) set.Set[string] {
 					colName := c.ColumnDef.Name.Normalize()
 					names.Add(schemaName + "." + tableName + "." + colName)
 
-				// None of these provide anything that can be depended on elsewhere
 				case *tree.AlterTableAlterColumnType:
+					// Altering a column's type provides the column name as well
+					colName := c.Column.Normalize()
+					names.Add(schemaName + "." + tableName + "." + colName)
+
+				// None of these provide anything that can be depended on elsewhere
 				case *tree.AlterTableSetDefault:
 				case *tree.AlterTableDropColumn:
 				case *tree.AlterTableDropNotNull:
