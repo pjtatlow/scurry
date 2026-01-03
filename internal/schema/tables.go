@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/types"
 )
 
 // compareTables finds differences in tables
@@ -117,15 +118,21 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	localComponents := extractTableComponents(local)
 	remoteComponents := extractTableComponents(remote)
 
-	// Compare columns
+	// Handle column type changes first - these need special handling because indexes/constraints
+	// that reference the changed columns must be dropped before the type change and recreated after.
+	// This function removes handled columns/indexes/constraints from the component maps.
+	typeChangeDiffs := handleColumnTypeChanges(tableName, local.Table, localComponents, remoteComponents)
+	diffs = append(diffs, typeChangeDiffs...)
+
+	// Compare remaining columns (type changes already handled above)
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
 	diffs = append(diffs, columnDiffs...)
 
-	// Compare indexes
+	// Compare remaining indexes
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
 	diffs = append(diffs, indexDiffs...)
 
-	// Compare constraints (foreign keys, check constraints, unique constraints)
+	// Compare remaining constraints
 	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
 	diffs = append(diffs, constraintDiffs...)
 
@@ -134,7 +141,145 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	return diffs
 }
 
-// compareColumns finds differences in table columns
+// handleColumnTypeChanges handles column type changes that require an on-disk data rewrite.
+// Such changes (narrowing, family changes) cannot run inside a transaction and require
+// any indexes on the column to be dropped and recreated. This function generates statements
+// in the correct order: DROP indexes/constraints, ALTER COLUMN TYPE, CREATE indexes/constraints.
+//
+// Safe type changes (widening within same family) are left for compareColumn to handle.
+// Modifies the component maps to remove handled items.
+func handleColumnTypeChanges(
+	tableName string,
+	tableRef tree.TableName,
+	localComponents, remoteComponents *tableComponents,
+) []Difference {
+	typeChangedLocalCols := make(map[string]*tree.ColumnTableDef)
+	var typeChangedColNames []string
+	for colName, localCol := range localComponents.columns {
+		if remoteCol, exists := remoteComponents.columns[colName]; exists {
+			if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
+				localType, localOk := localCol.Type.(*types.T)
+				remoteType, remoteOk := remoteCol.Type.(*types.T)
+				if localOk && remoteOk && typeChangeRequiresRewrite(localType, remoteType) {
+					typeChangedColNames = append(typeChangedColNames, colName)
+					typeChangedLocalCols[colName] = localCol
+				} else if !localOk || !remoteOk {
+					// If we can't determine the type, assume rewrite is needed
+					typeChangedColNames = append(typeChangedColNames, colName)
+					typeChangedLocalCols[colName] = localCol
+				}
+			}
+		}
+	}
+
+	if len(typeChangedColNames) == 0 {
+		return nil
+	}
+
+	affectedRemoteIndexes := findAndRemoveAffectedIndexes(remoteComponents.indexes, typeChangedColNames)
+	affectedLocalIndexes := findAndRemoveAffectedIndexes(localComponents.indexes, typeChangedColNames)
+	affectedRemoteUniqueConstraints := findAndRemoveAffectedUniqueConstraints(remoteComponents.constraints, typeChangedColNames)
+	affectedLocalUniqueConstraints := findAndRemoveAffectedUniqueConstraints(localComponents.constraints, typeChangedColNames)
+
+	for _, colName := range typeChangedColNames {
+		delete(localComponents.columns, colName)
+		delete(remoteComponents.columns, colName)
+	}
+
+	statements := make([]tree.Statement, 0)
+	hasDrops := len(affectedRemoteIndexes) > 0 || len(affectedRemoteUniqueConstraints) > 0
+	hasCreates := len(affectedLocalIndexes) > 0 || len(affectedLocalUniqueConstraints) > 0
+
+	// Type changes requiring rewrite cannot run inside a transaction
+	statements = append(statements, &tree.CommitTransaction{}, &tree.BeginTransaction{})
+
+	if hasDrops {
+		for indexName := range affectedRemoteIndexes {
+			statements = append(statements, &tree.DropIndex{
+				IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(indexName)}},
+				DropBehavior: tree.DropRestrict,
+			})
+		}
+
+		for constraintName := range affectedRemoteUniqueConstraints {
+			statements = append(statements, &tree.DropIndex{
+				IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(constraintName)}},
+				DropBehavior: tree.DropCascade,
+			})
+		}
+
+		statements = append(statements, &tree.CommitTransaction{}, &tree.BeginTransaction{})
+	}
+
+	// ALTER COLUMN TYPE requiring rewrite must run outside a transaction
+	statements = append(statements, &tree.CommitTransaction{})
+
+	alterTypeCmds := make(tree.AlterTableCmds, 0, len(typeChangedColNames))
+	for _, colName := range typeChangedColNames {
+		localCol := typeChangedLocalCols[colName]
+		alterTypeCmds = append(alterTypeCmds, &tree.AlterTableAlterColumnType{
+			Column: localCol.Name,
+			ToType: localCol.Type,
+		})
+	}
+	statements = append(statements, &tree.AlterTable{
+		Table: tableRef.ToUnresolvedObjectName(),
+		Cmds:  alterTypeCmds,
+	})
+
+	statements = append(statements, &tree.BeginTransaction{})
+
+	if hasCreates {
+		statements = append(statements, &tree.CommitTransaction{}, &tree.BeginTransaction{})
+
+		for _, uniqueConstraint := range affectedLocalUniqueConstraints {
+			statements = append(statements, &tree.CreateIndex{
+				Name:             uniqueConstraint.Name,
+				Table:            tableRef,
+				Unique:           true,
+				Columns:          uniqueConstraint.Columns,
+				Storing:          uniqueConstraint.Storing,
+				Type:             uniqueConstraint.Type,
+				Sharded:          uniqueConstraint.Sharded,
+				PartitionByIndex: uniqueConstraint.PartitionByIndex,
+				StorageParams:    uniqueConstraint.StorageParams,
+				Predicate:        uniqueConstraint.Predicate,
+				Invisibility:     uniqueConstraint.Invisibility,
+			})
+		}
+
+		for indexName, localIndex := range affectedLocalIndexes {
+			statements = append(statements, &tree.CreateIndex{
+				Name:             tree.Name(indexName),
+				Table:            tableRef,
+				Columns:          localIndex.Columns,
+				Storing:          localIndex.Storing,
+				Type:             localIndex.Type,
+				Sharded:          localIndex.Sharded,
+				PartitionByIndex: localIndex.PartitionByIndex,
+				StorageParams:    localIndex.StorageParams,
+				Predicate:        localIndex.Predicate,
+				Invisibility:     localIndex.Invisibility,
+			})
+		}
+	}
+
+	// Build description
+	description := fmt.Sprintf("Column type changed for: %s", typeChangedColNames[0])
+	if len(typeChangedColNames) > 1 {
+		description = fmt.Sprintf("Column types changed for: %v", typeChangedColNames)
+	}
+
+	return []Difference{{
+		Type:                DiffTypeTableModified,
+		ObjectName:          tableName,
+		Description:         description,
+		Dangerous:           true,
+		MigrationStatements: statements,
+	}}
+}
+
+// compareColumns finds differences in table columns.
 func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef) []Difference {
 	diffs := make([]Difference, 0)
 
@@ -315,8 +460,6 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	}
 
 	// TODO: Column families?
-	// TODO: Unique constraints?
-	// TODO: Other check constraints?
 
 	if len(cmds) > 0 {
 		alterTable := &tree.AlterTable{
@@ -334,7 +477,7 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	return diffs
 }
 
-// compareIndexes finds differences in table indexes
+// compareIndexes finds differences in table indexes.
 func compareIndexes(tableName string, tableRef tree.TableName, localIndexes, remoteIndexes map[string]*tree.IndexTableDef) []Difference {
 	diffs := make([]Difference, 0)
 
@@ -403,6 +546,7 @@ func compareIndexes(tableName string, tableRef tree.TableName, localIndexes, rem
 	return diffs
 }
 
+// compareConstraints finds differences in table constraints.
 func compareConstraints(tableName string, tableRef tree.TableName, localConstraints, remoteConstraints map[string]tree.ConstraintTableDef) []Difference {
 	diffs := make([]Difference, 0)
 	localPrimaryKey := findPrimaryKey(localConstraints)
@@ -443,7 +587,6 @@ func compareConstraints(tableName string, tableRef tree.TableName, localConstrai
 
 	// Find added constraints
 	for constraintName, localConstraint := range localConstraints {
-
 		if remoteConstraint, existsInRemote := remoteConstraints[constraintName]; existsInRemote {
 			localConstraintStr := formatNode(localConstraint)
 			remoteConstraintStr := formatNode(remoteConstraint)
@@ -559,4 +702,133 @@ func findPrimaryKey(constraints map[string]tree.ConstraintTableDef) *tree.Unique
 		}
 	}
 	return nil
+}
+
+// getIndexColumnNames returns the column names referenced by an index.
+func getIndexColumnNames(index *tree.IndexTableDef) []string {
+	cols := make([]string, 0, len(index.Columns)+len(index.Storing))
+	for _, col := range index.Columns {
+		if col.Column != "" {
+			cols = append(cols, col.Column.Normalize())
+		}
+	}
+	for _, col := range index.Storing {
+		cols = append(cols, col.Normalize())
+	}
+	return cols
+}
+
+// getUniqueConstraintColumnNames returns the column names referenced by a unique constraint.
+func getUniqueConstraintColumnNames(constraint *tree.UniqueConstraintTableDef) []string {
+	cols := make([]string, 0, len(constraint.Columns)+len(constraint.Storing))
+	for _, col := range constraint.Columns {
+		if col.Column != "" {
+			cols = append(cols, col.Column.Normalize())
+		}
+	}
+	for _, col := range constraint.Storing {
+		cols = append(cols, col.Normalize())
+	}
+	return cols
+}
+
+// findAndRemoveAffectedIndexes returns indexes that reference any of the given columns
+// and removes them from the input map.
+func findAndRemoveAffectedIndexes(indexes map[string]*tree.IndexTableDef, changedCols []string) map[string]*tree.IndexTableDef {
+	changedColSet := make(map[string]bool)
+	for _, col := range changedCols {
+		changedColSet[col] = true
+	}
+
+	affected := make(map[string]*tree.IndexTableDef)
+	for name, index := range indexes {
+		for _, col := range getIndexColumnNames(index) {
+			if changedColSet[col] {
+				affected[name] = index
+				delete(indexes, name)
+				break
+			}
+		}
+	}
+	return affected
+}
+
+// findAndRemoveAffectedUniqueConstraints returns non-PK unique constraints that reference any of the given columns
+// and removes them from the input map.
+func findAndRemoveAffectedUniqueConstraints(constraints map[string]tree.ConstraintTableDef, changedCols []string) map[string]*tree.UniqueConstraintTableDef {
+	changedColSet := make(map[string]bool)
+	for _, col := range changedCols {
+		changedColSet[col] = true
+	}
+
+	affected := make(map[string]*tree.UniqueConstraintTableDef)
+	for name, constraint := range constraints {
+		if uniqueConstraint, ok := constraint.(*tree.UniqueConstraintTableDef); ok && !uniqueConstraint.PrimaryKey {
+			for _, col := range getUniqueConstraintColumnNames(uniqueConstraint) {
+				if changedColSet[col] {
+					affected[name] = uniqueConstraint
+					delete(constraints, name)
+					break
+				}
+			}
+		}
+	}
+	return affected
+}
+
+// typeChangeRequiresRewrite returns true if the type change requires an on-disk
+// data rewrite. Such changes cannot run inside a transaction and require indexes
+// to be dropped and recreated. Widening within the same family is safe; narrowing
+// or changing families requires rewrite.
+func typeChangeRequiresRewrite(localType, remoteType *types.T) bool {
+	if localType.Family() != remoteType.Family() {
+		return true
+	}
+
+	switch localType.Family() {
+	case types.IntFamily, types.FloatFamily:
+		return localType.Width() < remoteType.Width()
+
+	case types.StringFamily, types.CollatedStringFamily:
+		// Width of 0 means unbounded (TEXT, VARCHAR without limit)
+		localWidth := localType.Width()
+		remoteWidth := remoteType.Width()
+		if localWidth == 0 {
+			return false
+		}
+		if remoteWidth == 0 {
+			return true
+		}
+		return localWidth < remoteWidth
+
+	case types.DecimalFamily:
+		// Precision/Scale of 0 means unbounded
+		localPrecision := localType.Precision()
+		remotePrecision := remoteType.Precision()
+		localScale := localType.Scale()
+		remoteScale := remoteType.Scale()
+
+		if localPrecision == 0 {
+			if localScale == 0 {
+				return false
+			}
+			return localScale < remoteScale
+		}
+		if localPrecision < remotePrecision {
+			return true
+		}
+		if localScale == 0 {
+			return false
+		}
+		return localScale < remoteScale
+
+	case types.BitFamily:
+		if localType.Width() == 0 {
+			return false
+		}
+		return localType.Width() < remoteType.Width()
+
+	default:
+		return true
+	}
 }

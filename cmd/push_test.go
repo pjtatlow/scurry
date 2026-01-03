@@ -458,9 +458,11 @@ func TestPushIntegrationComplex(t *testing.T) {
 					);
 				`,
 			},
-			// CockroachDB handles index updates automatically when column type changes
-			expectedStmtCount: 1, // Just ALTER COLUMN TYPE
-			expectedStmts:     []string{"ALTER COLUMN", "email", "TYPE", "VARCHAR"},
+			// CockroachDB doesn't support ALTER COLUMN TYPE requiring rewrite inside a transaction,
+			// so we need to DROP INDEX, then run ALTER COLUMN TYPE outside transaction, then CREATE INDEX
+			// Statements: DROP INDEX, COMMIT, BEGIN, COMMIT, ALTER, BEGIN, COMMIT, BEGIN, CREATE INDEX
+			expectedStmtCount: 9,
+			expectedStmts:     []string{"DROP INDEX", "ALTER COLUMN", "email", "TYPE", "VARCHAR", "CREATE INDEX"},
 		},
 		{
 			name: "add sequence and use as default with enum",
@@ -724,4 +726,373 @@ func TestPushIntegrationDryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges, "Dry run should not have applied changes")
 	assert.NotEmpty(t, result.Statements)
+}
+
+func TestPushIntegrationColumnTypeChanges(t *testing.T) {
+	tests := []struct {
+		name               string
+		initialSchema      map[string]string
+		updatedSchema      map[string]string
+		expectIndexRebuild bool
+		expectedStmts      []string
+		unexpectedStmts    []string
+	}{
+		{
+			name: "INT4 to INT8 widening - no index rebuild needed",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT4 NOT NULL,
+						INDEX age_idx (age)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT8 NOT NULL,
+						INDEX age_idx (age)
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "age", "INT8"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "INT8 to INT4 narrowing - index rebuild required",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT8 NOT NULL,
+						INDEX age_idx (age)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT4 NOT NULL,
+						INDEX age_idx (age)
+					);
+				`,
+			},
+			expectIndexRebuild: true,
+			expectedStmts:      []string{"DROP INDEX", "age_idx", "ALTER COLUMN", "age", "INT4", "CREATE INDEX", "age_idx"},
+			unexpectedStmts:    nil,
+		},
+		{
+			name: "VARCHAR(100) to VARCHAR(200) widening - no index rebuild needed",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(100) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(200) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "email", "VARCHAR(200)"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "VARCHAR(200) to VARCHAR(100) narrowing - index rebuild required",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(200) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(100) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			expectIndexRebuild: true,
+			expectedStmts:      []string{"DROP INDEX", "email_idx", "ALTER COLUMN", "email", "VARCHAR(100)", "CREATE INDEX", "email_idx"},
+			unexpectedStmts:    nil,
+		},
+		{
+			name: "VARCHAR(100) to TEXT unbounded - no index rebuild needed",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(100) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email TEXT NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "email", "STRING"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "TEXT to VARCHAR(100) bounded - index rebuild required",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email TEXT NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						email VARCHAR(100) NOT NULL,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			expectIndexRebuild: true,
+			expectedStmts:      []string{"DROP INDEX", "email_idx", "ALTER COLUMN", "email", "VARCHAR(100)", "CREATE INDEX", "email_idx"},
+			unexpectedStmts:    nil,
+		},
+		{
+			name: "INT to STRING family change - index rebuild required",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						code INT NOT NULL,
+						INDEX code_idx (code)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						code STRING NOT NULL,
+						INDEX code_idx (code)
+					);
+				`,
+			},
+			expectIndexRebuild: true,
+			expectedStmts:      []string{"DROP INDEX", "code_idx", "ALTER COLUMN", "code", "STRING", "CREATE INDEX", "code_idx"},
+			unexpectedStmts:    nil,
+		},
+		{
+			name: "FLOAT4 to FLOAT8 widening - no index rebuild needed",
+			initialSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price FLOAT4 NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price FLOAT8 NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "price", "FLOAT8"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "DECIMAL(10,2) to DECIMAL(15,4) widening - no index rebuild needed",
+			initialSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price DECIMAL(10,2) NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price DECIMAL(15,4) NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "price", "DECIMAL(15,4)"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "DECIMAL(15,4) to DECIMAL(10,2) narrowing - index rebuild required",
+			initialSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price DECIMAL(15,4) NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/products.sql": `
+					CREATE TABLE products (
+						id INT PRIMARY KEY,
+						price DECIMAL(10,2) NOT NULL,
+						INDEX price_idx (price)
+					);
+				`,
+			},
+			expectIndexRebuild: true,
+			expectedStmts:      []string{"DROP INDEX", "price_idx", "ALTER COLUMN", "price", "DECIMAL(10,2)", "CREATE INDEX", "price_idx"},
+			unexpectedStmts:    nil,
+		},
+		{
+			name: "type widening without index - no index statements",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT4 NOT NULL
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT8 NOT NULL
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "age", "INT8"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+		{
+			name: "type narrowing without index - no index statements",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT8 NOT NULL
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						age INT4 NOT NULL
+					);
+				`,
+			},
+			expectIndexRebuild: false,
+			expectedStmts:      []string{"ALTER COLUMN", "age", "INT4"},
+			unexpectedStmts:    []string{"DROP INDEX", "CREATE INDEX"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			client, err := db.GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			fs := afero.NewMemMapFs()
+			schemaDir := "/schema"
+
+			writeSchemaFiles := func(files map[string]string) {
+				fs.RemoveAll(schemaDir)
+				err := fs.MkdirAll(schemaDir, 0755)
+				require.NoError(t, err)
+
+				for path, content := range files {
+					fullPath := filepath.Join(schemaDir, path)
+					dir := filepath.Dir(fullPath)
+					err := fs.MkdirAll(dir, 0755)
+					require.NoError(t, err)
+					err = afero.WriteFile(fs, fullPath, []byte(content), 0644)
+					require.NoError(t, err)
+				}
+			}
+
+			// Push initial schema
+			writeSchemaFiles(tt.initialSchema)
+
+			opts := PushOptions{
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
+			}
+
+			result, err := executePush(ctx, opts)
+			require.NoError(t, err)
+			assert.True(t, result.HasChanges, "Initial push should have changes")
+
+			// Push updated schema
+			writeSchemaFiles(tt.updatedSchema)
+
+			result, err = executePush(ctx, opts)
+			require.NoError(t, err)
+			assert.True(t, result.HasChanges, "Updated push should have changes")
+
+			allStatements := strings.Join(result.Statements, "\n")
+
+			// Verify expected statements are present
+			for _, expected := range tt.expectedStmts {
+				assert.Contains(t, allStatements, expected,
+					"Expected to find %q in statements:\n%s", expected, allStatements)
+			}
+
+			// Verify unexpected statements are absent
+			for _, unexpected := range tt.unexpectedStmts {
+				assert.NotContains(t, allStatements, unexpected,
+					"Did not expect to find %q in statements:\n%s", unexpected, allStatements)
+			}
+
+			// Verify transaction boundaries when index rebuild is expected
+			if tt.expectIndexRebuild && strings.Contains(allStatements, "DROP INDEX") {
+				assert.Contains(t, allStatements, "COMMIT",
+					"Expected COMMIT for transaction boundary:\n%s", allStatements)
+				assert.Contains(t, allStatements, "BEGIN",
+					"Expected BEGIN for transaction boundary:\n%s", allStatements)
+			}
+		})
+	}
 }
