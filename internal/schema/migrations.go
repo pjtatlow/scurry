@@ -12,7 +12,7 @@ import (
 )
 
 type migrationStatement struct {
-	stmt     tree.Statement
+	stmts    []tree.Statement
 	requires set.Set[*migrationStatement]
 }
 
@@ -43,27 +43,38 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 			warnings = append(warnings, difference.WarningMessage)
 		}
 
-		var prev *migrationStatement
+		if len(difference.MigrationStatements) == 0 {
+			continue
+		}
+
+		// Create one migrationStatement per Difference, containing all its statements
+		// This ensures all statements from a single diff stay together and execute in order
+		stmt := &migrationStatement{
+			stmts:    difference.MigrationStatements,
+			requires: set.New[*migrationStatement](),
+		}
+
+		// Check if this is a drop schema statement (they go last)
+		isDropSchema := false
 		for _, ddl := range difference.MigrationStatements {
-
-			stmt := &migrationStatement{
-				stmt:     ddl,
-				requires: set.New[*migrationStatement](),
-			}
-			if prev != nil {
-				// Statements in the same difference are dependant on any previous statements
-				// This lets us make a difference that drops / creates, and they will be executed in that order.
-				stmt.requires.Add(prev)
-			}
 			if _, ok := ddl.(*tree.DropSchema); ok {
-				dropSchemaStmts = append(dropSchemaStmts, stmt)
-			} else {
-				statements = append(statements, stmt)
+				isDropSchema = true
+				break
 			}
+		}
 
-			if difference.OriginalDependencies != nil && difference.OriginalDependencies.Size() > 0 {
-				originalDependencies[stmt] = difference.OriginalDependencies
-			}
+		if isDropSchema {
+			dropSchemaStmts = append(dropSchemaStmts, stmt)
+		} else {
+			statements = append(statements, stmt)
+		}
+
+		if difference.OriginalDependencies != nil && difference.OriginalDependencies.Size() > 0 {
+			originalDependencies[stmt] = difference.OriginalDependencies
+		}
+
+		// Track what each statement group drops for reverse dependency resolution
+		for _, ddl := range difference.MigrationStatements {
 			switch d := ddl.(type) {
 			case *tree.DropType:
 				for _, name := range d.Names {
@@ -91,25 +102,32 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 					dropStatements.add(schemaName+"."+routineName, stmt)
 				}
 			}
-
-			prev = stmt
 		}
 	}
 	statements = append(statements, dropSchemaStmts...)
 
-	// Collect all of the names provided by each statement, so as we explore dependencies we can connect statements together.
+	// Collect all of the names provided by each statement group, so as we explore dependencies we can connect statements together.
 	for _, migration := range statements {
-		for name := range getProvidedNames(migration.stmt).Values() {
-			providers.add(name, migration)
+		for _, ddl := range migration.stmts {
+			for name := range getProvidedNames(ddl).Values() {
+				providers.add(name, migration)
+			}
 		}
 	}
 
-	// Add dependencies between statements by checking the requirements against the things that other statements provide.
+	// Add dependencies between statement groups by checking the requirements against the things that other groups provide.
 	// If we don't have a provider for a requirement, we will assume it is already present or a builtin.
 	for _, migration := range statements {
-		for name := range getDependencyNames(migration.stmt).Values() {
-			if others, ok := providers[name]; ok {
-				migration.requires = migration.requires.Union(others)
+		for _, ddl := range migration.stmts {
+			for name := range getDependencyNames(ddl).Values() {
+				if others, ok := providers[name]; ok {
+					for other := range others.Values() {
+						// Don't add self-references - a group can't depend on itself
+						if other != migration {
+							migration.requires.Add(other)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -126,7 +144,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	}
 
 	slices.SortFunc(statements, func(a, b *migrationStatement) int {
-		return strings.Compare(a.stmt.String(), b.stmt.String())
+		return strings.Compare(a.stmts[0].String(), b.stmts[0].String())
 	})
 
 	// Collect all of the statements in a set, making sure dependencies are put in first.
@@ -162,7 +180,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		} else {
 			// otherwise we need to end that chunk and make a new one
 			slices.SortFunc(orderedStatements[start:end], func(a, b *migrationStatement) int {
-				return strings.Compare(a.stmt.String(), b.stmt.String())
+				return strings.Compare(a.stmts[0].String(), b.stmts[0].String())
 			})
 			start = end
 			currentChunk = set.New[*migrationStatement]()
@@ -170,30 +188,37 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		}
 	}
 	slices.SortFunc(orderedStatements[start:], func(a, b *migrationStatement) int {
-		return strings.Compare(a.stmt.String(), b.stmt.String())
+		return strings.Compare(a.stmts[0].String(), b.stmts[0].String())
 	})
+
+	// Flatten all statements from each group, preserving their order
+	allStatements := make([]tree.Statement, 0)
+	for _, migration := range orderedStatements {
+		allStatements = append(allStatements, migration.stmts...)
+	}
+
 	// If we begin a transaction change, skip it
-	l := len(orderedStatements)
-	if l > 2 && isCommitBegin(orderedStatements[:2]) {
-		orderedStatements = orderedStatements[2:]
+	l := len(allStatements)
+	if l > 2 && isCommitBegin(allStatements[:2]) {
+		allStatements = allStatements[2:]
 	}
 	// If we end a transaction change, skip it
-	l = len(orderedStatements)
-	if l > 2 && isCommitBegin(orderedStatements[l-2:]) {
-		orderedStatements = orderedStatements[:l-2]
+	l = len(allStatements)
+	if l > 2 && isCommitBegin(allStatements[l-2:]) {
+		allStatements = allStatements[:l-2]
 	}
 
 	ddl := make([]string, 0)
-	for _, migration := range orderedStatements {
+	for _, stmt := range allStatements {
 		var s string
 		var err error
 		if pretty {
-			s, err = tree.Pretty(migration.stmt)
+			s, err = tree.Pretty(stmt)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to pretty print migration statement: %w", err)
 			}
 		} else {
-			s = migration.stmt.String()
+			s = stmt.String()
 		}
 		ddl = append(ddl, s)
 	}
@@ -207,9 +232,9 @@ func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatem
 
 		parts := make([]string, 0, len(pending)+1)
 		for _, m := range pending {
-			parts = append(parts, ui.SqlCode(m.stmt.String()))
+			parts = append(parts, ui.SqlCode(m.stmts[0].String()))
 		}
-		parts = append(parts, ui.SqlCode(migration.stmt.String()))
+		parts = append(parts, ui.SqlCode(migration.stmts[0].String()))
 
 		return nil, fmt.Errorf("circular dependency detected\n\n%s", strings.Join(parts, fmt.Sprintf("\n\n%s\n\n", ui.Warning("REQUIRES"))))
 	}
@@ -228,14 +253,14 @@ func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatem
 	return result, nil
 }
 
-func isCommitBegin(stmts []*migrationStatement) bool {
+func isCommitBegin(stmts []tree.Statement) bool {
 	if len(stmts) != 2 {
 		return false
 	}
-	if _, ok := stmts[0].stmt.(*tree.CommitTransaction); !ok {
+	if _, ok := stmts[0].(*tree.CommitTransaction); !ok {
 		return false
 	}
-	if _, ok := stmts[1].stmt.(*tree.BeginTransaction); !ok {
+	if _, ok := stmts[1].(*tree.BeginTransaction); !ok {
 		return false
 	}
 	return true
