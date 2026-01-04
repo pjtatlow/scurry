@@ -271,7 +271,7 @@ func handleColumnTypeChanges(
 	}
 
 	return []Difference{{
-		Type:                DiffTypeTableModified,
+		Type:                DiffTypeColumnTypeChanged,
 		ObjectName:          tableName,
 		Description:         description,
 		Dangerous:           true,
@@ -375,14 +375,24 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	cmds := make(tree.AlterTableCmds, 0)
 	dangerous := false
 
-	// Check types
+	// Check types - handle separately so we can prompt for USING expression
 	if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
-		// TODO: collation? using? Maybe we ask the user for the "using" expression...
-		cmds = append(cmds, &tree.AlterTableAlterColumnType{
+		typeChangeCmd := &tree.AlterTableAlterColumnType{
 			Column: localCol.Name,
 			ToType: localCol.Type,
+		}
+		diffs = append(diffs, Difference{
+			Type:        DiffTypeColumnTypeChanged,
+			ObjectName:  tableName,
+			Description: fmt.Sprintf("Column '%s.%s' type changed from %s to %s", tableName, colName, remoteCol.Type.SQLString(), localCol.Type.SQLString()),
+			Dangerous:   true,
+			MigrationStatements: []tree.Statement{
+				&tree.AlterTable{
+					Table: tableRef.ToUnresolvedObjectName(),
+					Cmds:  tree.AlterTableCmds{typeChangeCmd},
+				},
+			},
 		})
-		dangerous = true
 	}
 
 	// Check nullability
