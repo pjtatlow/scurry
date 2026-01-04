@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
@@ -109,6 +112,12 @@ func doMigrationGen(ctx context.Context) error {
 		fmt.Println(ui.Success("✓ No schema changes detected"))
 		return nil
 	}
+
+	// Prompt for USING expressions on column type changes
+	if err := promptForUsingExpressionsGen(diffResult); err != nil {
+		return err
+	}
+
 	// Generate migration statements
 	statements, warnings, err := diffResult.GenerateMigrations(true)
 	if err != nil {
@@ -192,5 +201,75 @@ func doMigrationGen(ctx context.Context) error {
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("Migration created successfully! Apply it to your database with: scurry migration apply %s", migrationDirName)))
 
+	return nil
+}
+
+// promptForUsingExpressionsGen checks for column type changes and prompts the user
+// to optionally provide a USING expression for each one.
+func promptForUsingExpressionsGen(diffResult *schema.ComparisonResult) error {
+	for i := range diffResult.Differences {
+		diff := &diffResult.Differences[i]
+		if diff.Type != schema.DiffTypeColumnTypeChanged {
+			continue
+		}
+
+		// Find the AlterTableAlterColumnType command in the migration statements
+		for _, stmt := range diff.MigrationStatements {
+			alterTable, ok := stmt.(*tree.AlterTable)
+			if !ok {
+				continue
+			}
+			for _, cmd := range alterTable.Cmds {
+				alterColType, ok := cmd.(*tree.AlterTableAlterColumnType)
+				if !ok {
+					continue
+				}
+
+				// Prompt user if they want to add a USING expression
+				fmt.Println()
+				confirmed, err := ui.ConfirmPrompt(fmt.Sprintf("Add a USING expression for: %s?", diff.Description))
+				if err != nil {
+					return fmt.Errorf("confirmation prompt failed: %w", err)
+				}
+
+				if !confirmed {
+					continue
+				}
+
+				// Prompt for the expression
+				var exprStr string
+				form := huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("USING expression").
+							Description("Enter the expression to convert the column value").
+							Placeholder(alterColType.Column.String()).
+							Value(&exprStr).
+							Validate(func(s string) error {
+								if strings.TrimSpace(s) == "" {
+									return fmt.Errorf("expression cannot be empty")
+								}
+								_, err := parser.ParseExpr(s)
+								if err != nil {
+									return fmt.Errorf("invalid expression: %w", err)
+								}
+								return nil
+							}),
+					),
+				).WithTheme(ui.HuhTheme())
+
+				if err := form.Run(); err != nil {
+					return fmt.Errorf("expression input failed: %w", err)
+				}
+
+				// Parse and set the expression
+				expr, err := parser.ParseExpr(exprStr)
+				if err != nil {
+					return fmt.Errorf("failed to parse expression: %w", err)
+				}
+				alterColType.Using = expr
+			}
+		}
+	}
 	return nil
 }

@@ -35,6 +35,7 @@ const (
 	DiffTypeTableRemoved        DiffType = "table_removed"
 	DiffTypeTableModified       DiffType = "table_modified"
 	DiffTypeTableColumnModified DiffType = "table_column_modified"
+	DiffTypeColumnTypeChanged   DiffType = "column_type_changed"
 )
 
 // Difference represents a single schema difference
