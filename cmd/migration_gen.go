@@ -151,7 +151,66 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
 	if err != nil {
-		return fmt.Errorf("failed to apply migrations to schema: %w", err)
+		// Migration failed to apply - prompt user to create a manual migration
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to apply generated migration: %v", err)))
+		fmt.Println()
+		fmt.Println(ui.Info("The generated migration could not be applied. This may require manual intervention."))
+
+		confirmed, confirmErr := ui.ConfirmPrompt("Would you like to create a manual migration instead?")
+		if confirmErr != nil {
+			return fmt.Errorf("confirmation prompt failed: %w", confirmErr)
+		}
+
+		if !confirmed {
+			return fmt.Errorf("failed to apply migrations to schema: %w", err)
+		}
+
+		// Pre-populate with the generated statements
+		sqlStatements := strings.Join(statements, ";\n\n") + ";"
+
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewText().
+					Title("SQL Statements").
+					Description("Edit the SQL statements to fix the migration issue").
+					Placeholder("CREATE TABLE example (\n  id INT PRIMARY KEY\n);").
+					Value(&sqlStatements).
+					CharLimit(10000).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("SQL statements cannot be empty")
+						}
+						// Validate SQL
+						_, err := parser.Parse(s)
+						if err != nil {
+							return fmt.Errorf("failed to parse SQL: %w", err)
+						}
+						return nil
+					}),
+			),
+		).WithTheme(ui.HuhTheme())
+
+		if err := form.Run(); err != nil {
+			return fmt.Errorf("migration input canceled: %w", err)
+		}
+
+		// Parse edited statements
+		parsedStatements, err := parser.Parse(sqlStatements)
+		if err != nil {
+			return fmt.Errorf("failed to parse SQL: %w", err)
+		}
+
+		// Convert parsed statements to strings
+		statements = nil
+		for _, stmt := range parsedStatements {
+			statements = append(statements, stmt.AST.String())
+		}
+
+		// Try to apply the edited migration
+		newSchema, err = applyMigrationsToSchema(ctx, prodSchema, statements)
+		if err != nil {
+			return fmt.Errorf("failed to apply edited migrations to schema: %w", err)
+		}
 	}
 
 	// 5. Get migration name (from flag or prompt)
