@@ -64,6 +64,13 @@ func computeContentHash(content string) string {
 	return fmt.Sprintf("%x", hash)
 }
 
+// collapseWhitespace replaces all whitespace sequences (including newlines) with a single space
+var whitespaceRegex = regexp.MustCompile(`\s+`)
+
+func collapseWhitespace(s string) string {
+	return strings.TrimSpace(whitespaceRegex.ReplaceAllString(s, " "))
+}
+
 // formatCheckpointHeader formats the header line for checkpoint.sql
 func formatCheckpointHeader(migrationsHash, checkpointHash string) string {
 	return fmt.Sprintf("%s%s,checkpoint=%s",
@@ -93,13 +100,18 @@ func parseCheckpointHeader(line string) (*CheckpointHeader, error) {
 
 // generateCheckpointContent generates the full checkpoint.sql content
 func generateCheckpointContent(sch *schema.Schema, migrationsHash string) (string, error) {
-	// Generate schema SQL using the same approach as dumpProductionSchema
-	statements, _, err := schema.Compare(sch, schema.NewSchema()).GenerateMigrations(true)
+	// Generate schema SQL as compact single-line statements to minimize line count
+	statements, _, err := schema.Compare(sch, schema.NewSchema()).GenerateMigrations(false)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate schema statements: %w", err)
 	}
 
-	schemaContent := strings.Join(statements, ";\n\n\n") + ";\n"
+	// Collapse all whitespace in each statement to ensure single-line output
+	for i, stmt := range statements {
+		statements[i] = collapseWhitespace(stmt)
+	}
+
+	schemaContent := strings.Join(statements, ";") + ";"
 	checkpointHash := computeContentHash(schemaContent)
 	header := formatCheckpointHeader(migrationsHash, checkpointHash)
 
