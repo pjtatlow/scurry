@@ -255,7 +255,8 @@ func filterUnappliedMigrations(allMigrations []db.Migration, appliedMigrations [
 	for _, migration := range allMigrations {
 		if applied, exists := appliedMap[migration.Name]; exists {
 			// Migration has been applied - verify checksum hasn't changed
-			if applied.Checksum != migration.Checksum {
+			// Skip warning if stored checksum is empty (marked during creation, not execution)
+			if applied.Checksum != "" && applied.Checksum != migration.Checksum {
 				warnings = append(warnings, fmt.Sprintf(
 					"WARNING: Migration %s has been modified after being applied (checksum mismatch)",
 					migration.Name,

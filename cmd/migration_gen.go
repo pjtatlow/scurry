@@ -34,6 +34,7 @@ func init() {
 	migrationCmd.AddCommand(migrationGenCmd)
 
 	flags.AddDefinitionDir(migrationGenCmd)
+	flags.AddDbUrl(migrationGenCmd)
 	migrationGenCmd.Flags().StringVar(&migrationName, "name", "", "Name for the migration (skips prompt)")
 }
 
@@ -248,7 +249,7 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, err := createMigration(fs, name, statements)
+	migrationDirName, _, err := createMigration(fs, name, statements)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
@@ -267,6 +268,14 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
+	// 8. If db-url provided, check if local DB matches and mark migration as applied
+	if flags.DbUrl != "" {
+		if err := markMigrationAsAppliedIfMatches(ctx, migrationDirName, newSchema); err != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Could not mark migration as applied: %v", err)))
+		}
+	}
+
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("Migration created successfully! Apply it to your database with: scurry migration apply %s", migrationDirName)))
 

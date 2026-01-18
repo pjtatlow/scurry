@@ -25,6 +25,7 @@ You will be prompted to enter SQL statements, which will be validated before cre
 
 func init() {
 	migrationCmd.AddCommand(migrationNewCmd)
+	flags.AddDbUrl(migrationNewCmd)
 }
 
 func migrationNew(cmd *cobra.Command, args []string) error {
@@ -138,7 +139,7 @@ func doMigrationNew(ctx context.Context) error {
 	// Create migration directory and file
 	fmt.Println(ui.Subtle("→ Creating migration..."))
 
-	migrationDirName, err := createMigration(fs, migrationName, statementStrings)
+	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
@@ -155,6 +156,14 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
+	// If db-url provided, check if local DB matches and mark migration as applied
+	if flags.DbUrl != "" {
+		if err := markMigrationAsAppliedIfMatches(ctx, migrationDirName, newSchema); err != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Could not mark migration as applied: %v", err)))
+		}
+	}
+
 	fmt.Println()
 	fmt.Println(ui.Info(("Migration created successfully!")))
 
