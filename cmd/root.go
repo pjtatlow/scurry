@@ -24,6 +24,7 @@ var rootCmd = &cobra.Command{
 	Short: "CockroachDB schema migration tool",
 	Long: `Scurry is a CLI tool for managing CockroachDB database schemas.
 It allows you to define your database schema in SQL files and keep them in sync with your database.`,
+	SilenceUsage: true, // Don't print usage on runtime errors (only on argument validation errors)
 }
 
 func Execute() error {

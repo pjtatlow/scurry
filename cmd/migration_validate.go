@@ -225,16 +225,66 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 }
 
 // applyMigrationsToCleanDatabase creates a clean shadow database and applies all migrations
+// It uses checkpoints to optimize validation when available
 func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration, showProgress bool) (*schema.Schema, error) {
-	// Use shared test server to get a clean database (no statements executed yet)
-	client, err := db.GetShadowDB(ctx)
-	if err != nil {
-		return nil, err
+	fs := afero.NewOsFs()
+
+	// Try to find a valid checkpoint to skip some migrations
+	checkpoint, checkpointIdx, err := findLatestValidCheckpoint(fs, migrations)
+	if err != nil && showProgress {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: error finding checkpoint: %v", err)))
+	}
+
+	var client *db.Client
+	var startIndex int
+
+	if checkpoint != nil {
+		// Use checkpoint as starting point
+		if showProgress {
+			fmt.Println(ui.Subtle(fmt.Sprintf("  Using checkpoint from %s (skipping %d migration(s))",
+				checkpoint.MigrationName, checkpointIdx+1)))
+		}
+
+		// Parse checkpoint schema content
+		checkpointStatements, parseErr := schema.ParseSQL(checkpoint.SchemaContent)
+		if parseErr != nil {
+			// Fall back to full validation if checkpoint can't be parsed
+			if showProgress {
+				fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to parse checkpoint, starting from scratch: %v", parseErr)))
+			}
+			checkpoint = nil
+		} else {
+			// Convert parsed statements to string slice for GetShadowDB
+			var stmtStrings []string
+			for _, stmt := range checkpointStatements {
+				stmtStrings = append(stmtStrings, stmt.String())
+			}
+
+			client, err = db.GetShadowDB(ctx, stmtStrings...)
+			if err != nil {
+				return nil, err
+			}
+			startIndex = checkpointIdx + 1
+		}
+	}
+
+	if checkpoint == nil {
+		// No valid checkpoint, start from scratch
+		if showProgress && len(migrations) > 0 {
+			fmt.Println(ui.Subtle("  No valid checkpoint found, starting from empty database"))
+		}
+
+		client, err = db.GetShadowDB(ctx)
+		if err != nil {
+			return nil, err
+		}
+		startIndex = 0
 	}
 	defer client.Close()
 
-	// Apply each migration in its own transaction
-	for i, mig := range migrations {
+	// Apply remaining migrations
+	for i := startIndex; i < len(migrations); i++ {
+		mig := migrations[i]
 		if showProgress {
 			fmt.Println(ui.Subtle(fmt.Sprintf("  Applying migration %d/%d: %s", i+1, len(migrations), mig.name)))
 		}

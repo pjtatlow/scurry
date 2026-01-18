@@ -211,23 +211,25 @@ func handleColumnTypeChanges(
 		statements = append(statements, &tree.CommitTransaction{}, &tree.BeginTransaction{})
 	}
 
-	// ALTER COLUMN TYPE requiring rewrite must run outside a transaction
-	statements = append(statements, &tree.CommitTransaction{})
-
-	alterTypeCmds := make(tree.AlterTableCmds, 0, len(typeChangedColNames))
+	// ALTER COLUMN TYPE requiring rewrite must run outside a transaction.
+	// Each column type change must be in its own statement - CockroachDB doesn't
+	// allow combining multiple ALTER COLUMN TYPE operations in a single ALTER TABLE.
 	for _, colName := range typeChangedColNames {
 		localCol := typeChangedLocalCols[colName]
-		alterTypeCmds = append(alterTypeCmds, &tree.AlterTableAlterColumnType{
-			Column: localCol.Name,
-			ToType: localCol.Type,
-		})
+		statements = append(statements,
+			&tree.CommitTransaction{},
+			&tree.AlterTable{
+				Table: tableRef.ToUnresolvedObjectName(),
+				Cmds: tree.AlterTableCmds{
+					&tree.AlterTableAlterColumnType{
+						Column: localCol.Name,
+						ToType: localCol.Type,
+					},
+				},
+			},
+			&tree.BeginTransaction{},
+		)
 	}
-	statements = append(statements, &tree.AlterTable{
-		Table: tableRef.ToUnresolvedObjectName(),
-		Cmds:  alterTypeCmds,
-	})
-
-	statements = append(statements, &tree.BeginTransaction{})
 
 	if hasCreates {
 		statements = append(statements, &tree.CommitTransaction{}, &tree.BeginTransaction{})
