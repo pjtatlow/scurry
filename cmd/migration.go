@@ -128,39 +128,6 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, err
 	return migrationName, nil
 }
 
-// createMigrationWithCheckpoint creates a migration directory, migration.sql, and checkpoint.sql
-func createMigrationWithCheckpoint(fs afero.Fs, name string, statements []string, resultSchema *schema.Schema) (string, error) {
-	// Create the basic migration first
-	migrationName, err := createMigration(fs, name, statements)
-	if err != nil {
-		return "", err
-	}
-
-	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
-
-	// Load all existing migrations (already sorted by loadMigrations)
-	existingMigrations, err := loadMigrations(fs)
-	if err != nil {
-		return "", fmt.Errorf("failed to load migrations for checkpoint: %w", err)
-	}
-
-	// Find the index of our new migration to get all migrations up to it
-	var migrationsUpTo []migration
-	for i, m := range existingMigrations {
-		if m.name == migrationName {
-			migrationsUpTo = existingMigrations[:i+1]
-			break
-		}
-	}
-
-	// Create checkpoint
-	if err := createCheckpointForMigration(fs, migrationsUpTo, resultSchema, migrationPath); err != nil {
-		return "", fmt.Errorf("failed to create checkpoint: %w", err)
-	}
-
-	return migrationName, nil
-}
-
 // Helper function to apply migrations to production schema
 func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, migrations []string) (*schema.Schema, error) {
 

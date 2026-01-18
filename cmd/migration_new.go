@@ -127,7 +127,7 @@ func doMigrationNew(ctx context.Context) error {
 		}
 	}
 
-	// Apply migrations to get the new schema first (needed for checkpoint)
+	// Apply migrations to get the new schema (for updating schema.sql)
 	fmt.Println(ui.Subtle("→ Applying migrations to schema..."))
 
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statementStrings)
@@ -135,10 +135,10 @@ func doMigrationNew(ctx context.Context) error {
 		return fmt.Errorf("failed to apply migrations to schema: %w", err)
 	}
 
-	// Create migration directory and file with checkpoint
+	// Create migration directory and file
 	fmt.Println(ui.Subtle("→ Creating migration..."))
 
-	migrationDirName, err := createMigrationWithCheckpoint(fs, migrationName, statementStrings, newSchema)
+	migrationDirName, err := createMigration(fs, migrationName, statementStrings)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}

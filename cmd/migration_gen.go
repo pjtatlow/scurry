@@ -179,7 +179,7 @@ func doMigrationGen(ctx context.Context) error {
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, err := createMigrationWithCheckpoint(fs, name, statements, newSchema)
+	migrationDirName, err := createMigration(fs, name, statements)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
