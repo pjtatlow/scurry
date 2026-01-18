@@ -101,6 +101,14 @@ func doMigrationValidate(ctx context.Context) error {
 
 		fmt.Println()
 		fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
+		// Create checkpoint for the last migration if it doesn't exist
+		if len(migrations) > 0 {
+			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+				return fmt.Errorf("failed to create checkpoint: %w", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -131,6 +139,14 @@ func doMigrationValidate(ctx context.Context) error {
 	if !diffResult.HasChanges() {
 		fmt.Println()
 		fmt.Println(ui.Success("✓ Migrations match schema.sql"))
+
+		// Create checkpoint for the last migration if it doesn't exist
+		if len(migrations) > 0 {
+			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+				return fmt.Errorf("failed to create checkpoint: %w", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -163,6 +179,14 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
+	// Create checkpoint for the last migration if it doesn't exist
+	if len(migrations) > 0 {
+		if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+			return fmt.Errorf("failed to create checkpoint: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -304,4 +328,52 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 
 	// Get the schema from the database
 	return schema.LoadFromDatabase(ctx, client)
+}
+
+// ensureCheckpointForLastMigration creates a checkpoint for the last migration if one doesn't exist
+func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resultSchema *schema.Schema, showProgress bool) error {
+	if len(migrations) == 0 {
+		return nil
+	}
+
+	lastMigration := migrations[len(migrations)-1]
+	migrationDir := filepath.Join(flags.MigrationDir, lastMigration.name)
+
+	// Check if checkpoint already exists
+	checkpoint, err := loadCheckpoint(fs, migrationDir)
+	if err != nil {
+		// Error loading checkpoint, try to create a new one
+		if showProgress {
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint error for %s, regenerating...", lastMigration.name)))
+		}
+	} else if checkpoint != nil {
+		// Checkpoint exists, validate it
+		expectedHash := computeMigrationsHash(migrations)
+		if checkpoint.Header.MigrationsHash == expectedHash {
+			if err := validateCheckpoint(checkpoint); err == nil {
+				// Checkpoint is valid, nothing to do
+				return nil
+			}
+		}
+		// Checkpoint exists but is invalid, regenerate it
+		if showProgress {
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint invalid for %s, regenerating...", lastMigration.name)))
+		}
+	} else {
+		// No checkpoint exists
+		if showProgress {
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Creating checkpoint for %s...", lastMigration.name)))
+		}
+	}
+
+	// Create the checkpoint
+	if err := createCheckpointForMigration(fs, migrations, resultSchema, migrationDir); err != nil {
+		return err
+	}
+
+	if showProgress {
+		fmt.Println(ui.Success("  ✓ Checkpoint created"))
+	}
+
+	return nil
 }
