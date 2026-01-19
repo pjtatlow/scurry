@@ -18,7 +18,8 @@ import (
 )
 
 var (
-	validateOverwrite bool
+	validateOverwrite    bool
+	validateNoCheckpoint bool
 )
 
 type migration struct {
@@ -37,6 +38,7 @@ the result with schema.sql. Use --overwrite to update schema.sql instead of comp
 func init() {
 	migrationCmd.AddCommand(migrationValidateCmd)
 	migrationValidateCmd.Flags().BoolVar(&validateOverwrite, "overwrite", false, "Overwrite schema.sql with the result instead of comparing")
+	migrationValidateCmd.Flags().BoolVar(&validateNoCheckpoint, "no-checkpoint", false, "Skip checkpoint generation after successful validation")
 }
 
 func migrationValidate(cmd *cobra.Command, args []string) error {
@@ -103,7 +105,7 @@ func doMigrationValidate(ctx context.Context) error {
 		fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
 
 		// Create checkpoint for the last migration if it doesn't exist
-		if len(migrations) > 0 {
+		if !validateNoCheckpoint && len(migrations) > 0 {
 			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
 				return fmt.Errorf("failed to create checkpoint: %w", err)
 			}
@@ -141,7 +143,7 @@ func doMigrationValidate(ctx context.Context) error {
 		fmt.Println(ui.Success("✓ Migrations match schema.sql"))
 
 		// Create checkpoint for the last migration if it doesn't exist
-		if len(migrations) > 0 {
+		if !validateNoCheckpoint && len(migrations) > 0 {
 			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
 				return fmt.Errorf("failed to create checkpoint: %w", err)
 			}
@@ -181,7 +183,7 @@ func doMigrationValidate(ctx context.Context) error {
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
 
 	// Create checkpoint for the last migration if it doesn't exist
-	if len(migrations) > 0 {
+	if !validateNoCheckpoint && len(migrations) > 0 {
 		if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
 			return fmt.Errorf("failed to create checkpoint: %w", err)
 		}
