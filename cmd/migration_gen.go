@@ -220,6 +220,10 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		// Use the name from the flag
 		name = migrationName
 	} else {
+		// Check for interactive terminal when prompting for name
+		if !ui.IsInteractive() {
+			return fmt.Errorf("migration name required in non-interactive mode\nUse --name flag to specify the migration name")
+		}
 		// Ask user for migration name
 		form := huh.NewForm(
 			huh.NewGroup(
@@ -284,7 +288,13 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 
 // promptForUsingExpressionsGen checks for column type changes and prompts the user
 // to optionally provide a USING expression for each one.
+// In non-interactive mode, this is skipped (user can edit the migration file manually).
 func promptForUsingExpressionsGen(diffResult *schema.ComparisonResult) error {
+	// Skip in non-interactive mode
+	if !ui.IsInteractive() {
+		return nil
+	}
+
 	for i := range diffResult.Differences {
 		diff := &diffResult.Differences[i]
 		if diff.Type != schema.DiffTypeColumnTypeChanged {

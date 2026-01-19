@@ -41,6 +41,11 @@ func migrationNew(cmd *cobra.Command, args []string) error {
 }
 
 func doMigrationNew(ctx context.Context) error {
+	// Check for interactive terminal
+	if !ui.IsInteractive() {
+		return fmt.Errorf("migration new requires an interactive terminal\nRun this command in a terminal with TTY support")
+	}
+
 	fs := afero.NewOsFs()
 
 	// Validate migrations directory

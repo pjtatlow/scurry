@@ -88,6 +88,25 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Check for failed or pending migrations that need recovery
+	failedMigration, err := dbClient.GetFailedMigration(ctx)
+	if err != nil {
+		return err
+	}
+	if failedMigration != nil {
+		if failedMigration.Status == db.MigrationStatusFailed {
+			fmt.Println(ui.Error(fmt.Sprintf("Migration %q is in failed state", failedMigration.Name)))
+			if failedMigration.ErrorMsg != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Error: %s", *failedMigration.ErrorMsg)))
+			}
+		} else {
+			fmt.Println(ui.Error(fmt.Sprintf("Migration %q is in pending state (may have crashed during execution)", failedMigration.Name)))
+		}
+		fmt.Println()
+		fmt.Println(ui.Info("Run 'scurry migration recover' to resolve this before executing new migrations"))
+		return fmt.Errorf("cannot execute migrations while a migration is in %s state", failedMigration.Status)
+	}
+
 	// Get applied migrations
 	appliedMigrations, err := dbClient.GetAppliedMigrations(ctx)
 	if err != nil {
@@ -140,7 +159,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	for i, migration := range unappliedMigrations {
 		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(unappliedMigrations))
 
-		err := dbClient.ExecuteMigration(ctx, migration)
+		err := dbClient.ExecuteMigrationWithTracking(ctx, migration)
 		if err != nil {
 			// Migration failed - report the error and stop
 			fmt.Println(ui.Error(fmt.Sprintf("\nMigration failed: %s", migration.Name)))
@@ -158,6 +177,8 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 			fmt.Printf("%s\n", ui.Error(fmt.Sprintf("Failed migration: %s", migration.Name)))
 			fmt.Printf("%s\n", ui.Info(fmt.Sprintf("Remaining migrations not executed: %d", len(unappliedMigrations)-i-1)))
+			fmt.Println()
+			fmt.Println(ui.Info("Run 'scurry migration recover' to resolve this failure"))
 
 			return fmt.Errorf("migration execution stopped due to error")
 		}

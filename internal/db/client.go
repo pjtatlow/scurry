@@ -73,3 +73,51 @@ func (c *Client) SetStatementTimeout(ctx context.Context, d time.Duration) error
 func (c *Client) GetDB() *sql.DB {
 	return c.db
 }
+
+// ExecContext executes a query without returning any rows
+func (c *Client) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return c.db.ExecContext(ctx, query, args...)
+}
+
+// GetCurrentDatabase returns the name of the currently connected database
+func (c *Client) GetCurrentDatabase(ctx context.Context) (string, error) {
+	var dbName string
+	err := c.db.QueryRowContext(ctx, "SELECT current_database()").Scan(&dbName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get current database: %w", err)
+	}
+	return dbName, nil
+}
+
+// DropCurrentDatabase drops the currently connected database.
+// This connects to the defaultdb first, then drops the target database.
+func (c *Client) DropCurrentDatabase(ctx context.Context) error {
+	dbName, err := c.GetCurrentDatabase(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Parse the current URL to get connection info
+	parsedUrl, err := url.Parse(c.url)
+	if err != nil {
+		return fmt.Errorf("failed to parse database URL: %w", err)
+	}
+
+	// Connect to defaultdb instead
+	parsedUrl.Path = "/defaultdb"
+	defaultDbUrl := parsedUrl.String()
+
+	defaultDb, err := sql.Open("postgres", defaultDbUrl)
+	if err != nil {
+		return fmt.Errorf("failed to connect to defaultdb: %w", err)
+	}
+	defer defaultDb.Close()
+
+	// Drop the database
+	_, err = defaultDb.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s CASCADE", pq.QuoteIdentifier(dbName)))
+	if err != nil {
+		return fmt.Errorf("failed to drop database %s: %w", dbName, err)
+	}
+
+	return nil
+}

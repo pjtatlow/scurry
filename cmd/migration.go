@@ -140,7 +140,9 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 	}
 	defer client.Close()
 
-	client.ExecuteBulkDDL(ctx, migrations...)
+	if err := client.ExecuteBulkDDL(ctx, migrations...); err != nil {
+		return nil, err
+	}
 
 	// Get the new schema from the database
 	return schema.LoadFromDatabase(ctx, client)
