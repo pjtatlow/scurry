@@ -141,6 +141,10 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
 	diffs = append(diffs, constraintDiffs...)
 
+	// Compare storage params (TTL settings, etc.)
+	storageParamDiffs := compareStorageParams(tableName, local.Table, local.StorageParams, remote.StorageParams)
+	diffs = append(diffs, storageParamDiffs...)
+
 	// TODO: Compare column families
 
 	return diffs
@@ -289,6 +293,12 @@ func handleColumnTypeChanges(
 // compareColumns finds differences in table columns.
 func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef) []Difference {
 	diffs := make([]Difference, 0)
+
+	// Skip the crdb_internal_expiration column - this is managed automatically by CockroachDB
+	// when row-level TTL is enabled/disabled via storage params. We handle TTL via
+	// compareStorageParams, so we shouldn't try to add/remove this column directly.
+	delete(localCols, "crdb_internal_expiration")
+	delete(remoteCols, "crdb_internal_expiration")
 
 	// Find added columns
 	for colName, localCol := range localCols {
@@ -922,4 +932,100 @@ func typeChangeRequiresRewrite(localType, remoteType *types.T) bool {
 	default:
 		return true
 	}
+}
+
+// compareStorageParams compares table-level storage parameters (like TTL settings)
+// and generates ALTER TABLE SET/RESET statements for changes.
+func compareStorageParams(tableName string, tableRef tree.TableName, localParams, remoteParams tree.StorageParams) []Difference {
+	diffs := make([]Difference, 0)
+
+	// Build maps for comparison
+	localParamMap := make(map[string]tree.Expr)
+	remoteParamMap := make(map[string]tree.Expr)
+
+	for _, p := range localParams {
+		localParamMap[p.Key] = p.Value
+	}
+	for _, p := range remoteParams {
+		remoteParamMap[p.Key] = p.Value
+	}
+
+	// Find added or modified params
+	var addedOrModified tree.StorageParams
+	for key, localValue := range localParamMap {
+		remoteValue, existsInRemote := remoteParamMap[key]
+		if !existsInRemote {
+			// Param added
+			addedOrModified = append(addedOrModified, tree.StorageParam{Key: key, Value: localValue})
+		} else if formatExpr(localValue) != formatExpr(remoteValue) {
+			// Param modified
+			addedOrModified = append(addedOrModified, tree.StorageParam{Key: key, Value: localValue})
+		}
+	}
+
+	// Find removed params
+	var removed []string
+	for key := range remoteParamMap {
+		if _, existsInLocal := localParamMap[key]; !existsInLocal {
+			removed = append(removed, key)
+		}
+	}
+
+	// Generate SET statement for added/modified params
+	if len(addedOrModified) > 0 {
+		setCmd := &tree.AlterTable{
+			Table: tableRef.ToUnresolvedObjectName(),
+			Cmds: tree.AlterTableCmds{
+				&tree.AlterTableSetStorageParams{
+					StorageParams: addedOrModified,
+				},
+			},
+		}
+
+		description := fmt.Sprintf("Storage params changed for '%s'", tableName)
+		if len(addedOrModified) == 1 {
+			description = fmt.Sprintf("Storage param '%s' set on '%s'", addedOrModified[0].Key, tableName)
+		}
+
+		diffs = append(diffs, Difference{
+			Type:                DiffTypeTableModified,
+			ObjectName:          tableName,
+			Description:         description,
+			MigrationStatements: []tree.Statement{setCmd},
+		})
+	}
+
+	// Generate RESET statement for removed params
+	if len(removed) > 0 {
+		resetCmd := &tree.AlterTable{
+			Table: tableRef.ToUnresolvedObjectName(),
+			Cmds: tree.AlterTableCmds{
+				&tree.AlterTableResetStorageParams{
+					Params: removed,
+				},
+			},
+		}
+
+		description := fmt.Sprintf("Storage params removed from '%s'", tableName)
+		if len(removed) == 1 {
+			description = fmt.Sprintf("Storage param '%s' removed from '%s'", removed[0], tableName)
+		}
+
+		diffs = append(diffs, Difference{
+			Type:                DiffTypeTableModified,
+			ObjectName:          tableName,
+			Description:         description,
+			MigrationStatements: []tree.Statement{resetCmd},
+		})
+	}
+
+	return diffs
+}
+
+// formatExpr returns a string representation of an expression for comparison.
+func formatExpr(expr tree.Expr) string {
+	if expr == nil {
+		return ""
+	}
+	return tree.AsString(expr)
 }
