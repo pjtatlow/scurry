@@ -1202,3 +1202,176 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 		})
 	}
 }
+
+// TestPushRowLevelTTL tests adding row-level TTL to an existing table.
+func TestPushRowLevelTTL(t *testing.T) {
+
+	tests := []struct {
+		name              string
+		initialSchema     map[string]string
+		updatedSchema     map[string]string
+		expectedStmtCount int
+		expectedStmts     []string
+		expectTTLEnabled  bool // whether TTL should be enabled after the update
+	}{
+		{
+			name: "add row-level TTL to existing table",
+			initialSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					) WITH (ttl_expire_after = '30 days');
+				`,
+			},
+			// Should generate ALTER TABLE events SET (ttl_expire_after = '30 days')
+			// CockroachDB automatically adds the crdb_internal_expiration column when TTL is enabled
+			expectedStmtCount: 1,
+			expectedStmts:     []string{"ALTER TABLE", "events", "SET", "ttl_expire_after"},
+			expectTTLEnabled:  true,
+		},
+		{
+			name: "remove row-level TTL from existing table",
+			initialSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					) WITH (ttl_expire_after = '30 days');
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					);
+				`,
+			},
+			// Should generate ALTER TABLE events RESET (ttl)
+			// CockroachDB automatically removes the crdb_internal_expiration column when TTL is disabled
+			expectedStmtCount: 1,
+			expectedStmts:     []string{"ALTER TABLE", "events", "RESET"},
+			expectTTLEnabled:  false,
+		},
+		{
+			name: "modify row-level TTL duration",
+			initialSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					) WITH (ttl_expire_after = '30 days');
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/events.sql": `
+					CREATE TABLE events (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+					) WITH (ttl_expire_after = '7 days');
+				`,
+			},
+			// Should generate ALTER TABLE events SET (ttl_expire_after = '7 days')
+			expectedStmtCount: 1,
+			expectedStmts:     []string{"ALTER TABLE", "events", "SET", "ttl_expire_after"},
+			expectTTLEnabled:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			client, err := db.GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			fs := afero.NewMemMapFs()
+			schemaDir := "/schema"
+
+			writeSchemaFiles := func(files map[string]string) {
+				fs.RemoveAll(schemaDir)
+				err := fs.MkdirAll(schemaDir, 0755)
+				require.NoError(t, err)
+
+				for path, content := range files {
+					fullPath := filepath.Join(schemaDir, path)
+					dir := filepath.Dir(fullPath)
+					err := fs.MkdirAll(dir, 0755)
+					require.NoError(t, err)
+					err = afero.WriteFile(fs, fullPath, []byte(content), 0644)
+					require.NoError(t, err)
+				}
+			}
+
+			// Push initial schema
+			writeSchemaFiles(tt.initialSchema)
+
+			opts := PushOptions{
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
+			}
+
+			result, err := executePush(ctx, opts)
+			require.NoError(t, err)
+			assert.True(t, result.HasChanges, "Initial push should have changes")
+
+			// Update schema files to add TTL
+			writeSchemaFiles(tt.updatedSchema)
+
+			// Push updated schema
+			result, err = executePush(ctx, opts)
+			require.NoError(t, err)
+
+			// Verify statements
+			assert.Len(t, result.Statements, tt.expectedStmtCount,
+				"Expected %d statements, got %d: %v",
+				tt.expectedStmtCount, len(result.Statements), result.Statements)
+
+			// Verify expected statement substrings
+			allStatements := strings.Join(result.Statements, "\n")
+			for _, expected := range tt.expectedStmts {
+				assert.Contains(t, allStatements, expected,
+					"Expected to find %q in statements:\n%s", expected, allStatements)
+			}
+
+			// Verify TTL state on the table by checking storage parameters
+			rows, err := client.GetDB().QueryContext(ctx, "SHOW CREATE TABLE events")
+			require.NoError(t, err)
+			defer rows.Close()
+
+			var tableName, createStmt string
+			require.True(t, rows.Next())
+			err = rows.Scan(&tableName, &createStmt)
+			require.NoError(t, err)
+
+			// Check that TTL is configured (or not) based on expected state
+			if tt.expectTTLEnabled {
+				assert.Contains(t, createStmt, "ttl_expire_after",
+					"TTL should be configured on the table. Got:\n%s", createStmt)
+			} else {
+				assert.NotContains(t, createStmt, "ttl_expire_after",
+					"TTL should NOT be configured on the table. Got:\n%s", createStmt)
+			}
+		})
+	}
+}

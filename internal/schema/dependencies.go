@@ -208,6 +208,8 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 		case *tree.AlterTableSetNotNull:
 		case *tree.AlterTableDropConstraint:
 		case *tree.AlterTableSetVisible:
+		case *tree.AlterTableSetStorageParams:
+		case *tree.AlterTableResetStorageParams:
 
 		default:
 			panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
