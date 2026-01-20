@@ -132,6 +132,11 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
 	diffs = append(diffs, indexDiffs...)
 
+	// Remove constraints on dropped columns before comparing - these will be
+	// automatically dropped when the column is dropped, so we don't need to
+	// generate separate DROP CONSTRAINT statements.
+	removeConstraintsOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.constraints)
+
 	// Compare remaining constraints
 	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
 	diffs = append(diffs, constraintDiffs...)
@@ -786,6 +791,80 @@ func findAndRemoveAffectedUniqueConstraints(constraints map[string]tree.Constrai
 		}
 	}
 	return affected
+}
+
+// getConstraintColumns returns the column names referenced by a constraint.
+func getConstraintColumns(constraint tree.ConstraintTableDef) []string {
+	switch c := constraint.(type) {
+	case *tree.UniqueConstraintTableDef:
+		return getUniqueConstraintColumnNames(c)
+	case *tree.ForeignKeyConstraintTableDef:
+		cols := make([]string, len(c.FromCols))
+		for i, col := range c.FromCols {
+			cols[i] = col.Normalize()
+		}
+		return cols
+	case *tree.CheckConstraintTableDef:
+		return getCheckConstraintColumns(c.Expr)
+	}
+	return nil
+}
+
+// getCheckConstraintColumns extracts column names from a CHECK constraint expression.
+func getCheckConstraintColumns(expr tree.Expr) []string {
+	cols := make([]string, 0)
+	visitor := &checkConstraintColumnVisitor{columns: &cols}
+	tree.WalkExpr(visitor, expr)
+	return cols
+}
+
+type checkConstraintColumnVisitor struct {
+	columns *[]string
+}
+
+func (v *checkConstraintColumnVisitor) VisitPre(expr tree.Expr) (bool, tree.Expr) {
+	switch e := expr.(type) {
+	case *tree.ColumnItem:
+		*v.columns = append(*v.columns, e.ColumnName.Normalize())
+	case *tree.UnresolvedName:
+		// Column references in CHECK constraints appear as UnresolvedName with NumParts == 1
+		if e.NumParts == 1 {
+			*v.columns = append(*v.columns, tree.Name(e.Parts[0]).Normalize())
+		}
+	}
+	return true, expr
+}
+
+func (v *checkConstraintColumnVisitor) VisitPost(expr tree.Expr) tree.Expr {
+	return expr
+}
+
+// removeConstraintsOnDroppedColumns removes from remoteConstraints any constraints
+// that reference columns being dropped (columns in remote but not in local).
+// This prevents generating DROP CONSTRAINT statements for constraints that will
+// be automatically dropped when their column is dropped.
+func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteConstraints map[string]tree.ConstraintTableDef) {
+	// Find dropped columns
+	droppedCols := make(map[string]bool)
+	for colName := range remoteColumns {
+		if _, existsInLocal := localColumns[colName]; !existsInLocal {
+			droppedCols[colName] = true
+		}
+	}
+
+	if len(droppedCols) == 0 {
+		return
+	}
+
+	// Remove constraints that reference any dropped column
+	for constraintName, constraint := range remoteConstraints {
+		for _, col := range getConstraintColumns(constraint) {
+			if droppedCols[col] {
+				delete(remoteConstraints, constraintName)
+				break
+			}
+		}
+	}
 }
 
 // typeChangeRequiresRewrite returns true if the type change requires an on-disk
