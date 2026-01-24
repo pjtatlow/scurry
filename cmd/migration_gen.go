@@ -45,8 +45,15 @@ func migrationGen(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
-	err := doMigrationGen(ctx)
+	errCtx := &ErrorContext{}
+	err := doMigrationGen(ctx, errCtx)
 	if err != nil {
+		reportPath, reportErr := writeErrorReport(errCtx, err)
+		if reportErr != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Failed to write error report: %s", reportErr)))
+		} else if reportPath != "" {
+			fmt.Println(ui.Info(fmt.Sprintf("Error report written to: %s", reportPath)))
+		}
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
@@ -54,7 +61,7 @@ func migrationGen(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func doMigrationGen(ctx context.Context) error {
+func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	fs := afero.NewOsFs()
 
 	// Validate migrations directory
@@ -77,6 +84,7 @@ func doMigrationGen(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
+	errCtx.LocalSchema = localSchema
 
 	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
@@ -92,6 +100,7 @@ func doMigrationGen(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load production schema: %w", err)
 	}
+	errCtx.RemoteSchema = prodSchema
 
 	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in production",
@@ -123,6 +132,7 @@ func doMigrationGen(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate migrations: %w", err)
 	}
+	errCtx.Statements = statements
 
 	// Show differences
 	if flags.Verbose {

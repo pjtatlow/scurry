@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/pjtatlow/scurry/internal/db"
+	"github.com/pjtatlow/scurry/internal/schema"
 )
 
 func TestPushIntegration(t *testing.T) {
@@ -303,7 +306,7 @@ func TestPushIntegration(t *testing.T) {
 				Force:         true,
 			}
 
-			result, err := executePush(ctx, opts)
+			result, err := executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			if len(tt.initialSchema) > 0 {
 				assert.True(t, result.HasChanges, "Initial push should have changes")
@@ -313,7 +316,7 @@ func TestPushIntegration(t *testing.T) {
 			writeSchemaFiles(tt.updatedSchema)
 
 			// Push updated schema
-			result, err = executePush(ctx, opts)
+			result, err = executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 
 			// Verify statements
@@ -609,7 +612,7 @@ func TestPushIntegrationComplex(t *testing.T) {
 				Force:         true,
 			}
 
-			result, err := executePush(ctx, opts)
+			result, err := executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			if len(tt.initialSchema) > 0 {
 				assert.True(t, result.HasChanges, "Initial push should have changes")
@@ -619,7 +622,7 @@ func TestPushIntegrationComplex(t *testing.T) {
 			writeSchemaFiles(tt.updatedSchema)
 
 			// Push updated schema
-			result, err = executePush(ctx, opts)
+			result, err = executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 
 			// Verify statements
@@ -669,13 +672,13 @@ func TestPushIntegrationNoChanges(t *testing.T) {
 	}
 
 	// First push
-	result, err := executePush(ctx, opts)
+	result, err := executePush(ctx, opts, &ErrorContext{})
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges)
 	assert.NotEmpty(t, result.Statements)
 
 	// Second push with no changes
-	result, err = executePush(ctx, opts)
+	result, err = executePush(ctx, opts, &ErrorContext{})
 	require.NoError(t, err)
 	assert.False(t, result.HasChanges, "Second push should have no changes")
 	assert.Empty(t, result.Statements)
@@ -714,7 +717,7 @@ func TestPushIntegrationDryRun(t *testing.T) {
 	}
 
 	// Dry run push
-	result, err := executePush(ctx, opts)
+	result, err := executePush(ctx, opts, &ErrorContext{})
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges)
 	assert.NotEmpty(t, result.Statements)
@@ -722,7 +725,7 @@ func TestPushIntegrationDryRun(t *testing.T) {
 	assert.Contains(t, result.Statements[0], "users")
 
 	// Verify nothing was applied (another push should still have changes)
-	result, err = executePush(ctx, opts)
+	result, err = executePush(ctx, opts, &ErrorContext{})
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges, "Dry run should not have applied changes")
 	assert.NotEmpty(t, result.Statements)
@@ -1061,14 +1064,14 @@ func TestPushIntegrationColumnTypeChanges(t *testing.T) {
 				Force:         true,
 			}
 
-			result, err := executePush(ctx, opts)
+			result, err := executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			assert.True(t, result.HasChanges, "Initial push should have changes")
 
 			// Push updated schema
 			writeSchemaFiles(tt.updatedSchema)
 
-			result, err = executePush(ctx, opts)
+			result, err = executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			assert.True(t, result.HasChanges, "Updated push should have changes")
 
@@ -1187,7 +1190,7 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 				Force:         true,
 			}
 
-			result, err := executePush(ctx, opts)
+			result, err := executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			assert.True(t, result.HasChanges, "Initial push should have changes")
 
@@ -1196,7 +1199,7 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 			// not as a separate statement that causes "constraint is in the middle of being dropped"
 			writeSchemaFiles(tt.updatedSchema)
 
-			result, err = executePush(ctx, opts)
+			result, err = executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err, "Push should succeed - dropping column should not cause constraint drop error")
 			assert.True(t, result.HasChanges, "Updated push should have changes")
 		})
@@ -1331,7 +1334,7 @@ func TestPushRowLevelTTL(t *testing.T) {
 				Force:         true,
 			}
 
-			result, err := executePush(ctx, opts)
+			result, err := executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 			assert.True(t, result.HasChanges, "Initial push should have changes")
 
@@ -1339,7 +1342,7 @@ func TestPushRowLevelTTL(t *testing.T) {
 			writeSchemaFiles(tt.updatedSchema)
 
 			// Push updated schema
-			result, err = executePush(ctx, opts)
+			result, err = executePush(ctx, opts, &ErrorContext{})
 			require.NoError(t, err)
 
 			// Verify statements
@@ -1371,6 +1374,174 @@ func TestPushRowLevelTTL(t *testing.T) {
 			} else {
 				assert.NotContains(t, createStmt, "ttl_expire_after",
 					"TTL should NOT be configured on the table. Got:\n%s", createStmt)
+			}
+		})
+	}
+}
+
+func TestWriteErrorReport(t *testing.T) {
+	tests := []struct {
+		name             string
+		errCtx           *ErrorContext
+		err              error
+		expectFile       bool
+		expectedContains []string
+	}{
+		{
+			name: "complete error context with all fields",
+			errCtx: &ErrorContext{
+				LocalSchema: &schema.Schema{
+					OriginalStatements: []string{
+						"CREATE TABLE users (id INT PRIMARY KEY);",
+						"CREATE TABLE posts (id INT PRIMARY KEY);",
+					},
+				},
+				RemoteSchema: &schema.Schema{
+					OriginalStatements: []string{
+						"CREATE TABLE users (id INT PRIMARY KEY);",
+					},
+				},
+				Statements: []string{
+					"CREATE TABLE posts (id INT PRIMARY KEY);",
+				},
+			},
+			err:        errors.New("failed to apply migrations: connection refused"),
+			expectFile: true,
+			expectedContains: []string{
+				"generated:",
+				"error:",
+				"failed to apply migrations: connection refused",
+				"local_schema:",
+				"CREATE TABLE users",
+				"CREATE TABLE posts",
+				"remote_schema:",
+				"migrations:",
+			},
+		},
+		{
+			name: "error before migrations generated",
+			errCtx: &ErrorContext{
+				LocalSchema: &schema.Schema{
+					OriginalStatements: []string{"CREATE TABLE users (id INT PRIMARY KEY);"},
+				},
+				RemoteSchema: &schema.Schema{
+					OriginalStatements: []string{},
+				},
+				Statements: nil,
+			},
+			err:        errors.New("migration generation failed"),
+			expectFile: true,
+			expectedContains: []string{
+				"error: migration generation failed",
+				"local_schema:",
+				"remote_schema: []",
+			},
+		},
+		{
+			name: "missing local schema returns no file",
+			errCtx: &ErrorContext{
+				LocalSchema:  nil,
+				RemoteSchema: &schema.Schema{},
+				Statements:   nil,
+			},
+			err:        errors.New("error"),
+			expectFile: false,
+		},
+		{
+			name: "missing remote schema returns no file",
+			errCtx: &ErrorContext{
+				LocalSchema:  &schema.Schema{},
+				RemoteSchema: nil,
+				Statements:   nil,
+			},
+			err:        errors.New("error"),
+			expectFile: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filePath, err := writeErrorReport(tt.errCtx, tt.err)
+			require.NoError(t, err)
+
+			if !tt.expectFile {
+				assert.Empty(t, filePath, "Expected no file to be created")
+				return
+			}
+
+			require.NotEmpty(t, filePath, "Expected a file to be created")
+			assert.True(t, strings.HasSuffix(filePath, ".yaml"), "Expected .yaml extension")
+			defer os.Remove(filePath)
+
+			content, err := os.ReadFile(filePath)
+			require.NoError(t, err)
+
+			for _, expected := range tt.expectedContains {
+				assert.Contains(t, string(content), expected,
+					"Expected file to contain %q", expected)
+			}
+		})
+	}
+}
+
+func TestGenerateErrorReportContent(t *testing.T) {
+	tests := []struct {
+		name             string
+		errCtx           *ErrorContext
+		err              error
+		expectedContains []string
+	}{
+		{
+			name: "generates complete report",
+			errCtx: &ErrorContext{
+				LocalSchema: &schema.Schema{
+					OriginalStatements: []string{"CREATE TABLE foo (id INT);"},
+				},
+				RemoteSchema: &schema.Schema{
+					OriginalStatements: []string{"CREATE TABLE bar (id INT);"},
+				},
+				Statements: []string{"DROP TABLE bar;", "CREATE TABLE foo (id INT);"},
+			},
+			err: errors.New("test error message"),
+			expectedContains: []string{
+				"generated:",
+				"error: test error message",
+				"local_schema:",
+				"CREATE TABLE foo",
+				"remote_schema:",
+				"CREATE TABLE bar",
+				"migrations:",
+				"DROP TABLE bar",
+			},
+		},
+		{
+			name: "handles empty statements",
+			errCtx: &ErrorContext{
+				LocalSchema: &schema.Schema{
+					OriginalStatements: []string{},
+				},
+				RemoteSchema: &schema.Schema{
+					OriginalStatements: []string{},
+				},
+				Statements: nil,
+			},
+			err: errors.New("early error"),
+			expectedContains: []string{
+				"error: early error",
+				"local_schema: []",
+				"remote_schema: []",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content, err := generateErrorReportContent(tt.errCtx, tt.err)
+			require.NoError(t, err)
+
+			for _, expected := range tt.expectedContains {
+				assert.Contains(t, string(content), expected,
+					"Expected content to contain %q", expected)
 			}
 		})
 	}
