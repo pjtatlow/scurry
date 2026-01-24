@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
@@ -74,6 +76,59 @@ type PushResult struct {
 	HasChanges bool
 }
 
+// ErrorContext tracks schema and migration state for error reporting
+type ErrorContext struct {
+	LocalSchema  *schema.Schema
+	RemoteSchema *schema.Schema
+	Statements   []string
+}
+
+// ErrorReportFile represents the YAML structure of an error report
+type ErrorReportFile struct {
+	Generated    string   `yaml:"generated"`
+	Error        string   `yaml:"error"`
+	LocalSchema  []string `yaml:"local_schema"`
+	RemoteSchema []string `yaml:"remote_schema"`
+	Migrations   []string `yaml:"migrations,omitempty"`
+}
+
+// generateErrorReportContent generates the YAML content for an error report
+func generateErrorReportContent(errCtx *ErrorContext, err error) ([]byte, error) {
+	report := ErrorReportFile{
+		Generated:    time.Now().Format(time.RFC3339),
+		Error:        err.Error(),
+		LocalSchema:  errCtx.LocalSchema.OriginalStatements,
+		RemoteSchema: errCtx.RemoteSchema.OriginalStatements,
+		Migrations:   errCtx.Statements,
+	}
+
+	return yaml.Marshal(report)
+}
+
+// writeErrorReport writes a YAML error report to a temp file
+func writeErrorReport(errCtx *ErrorContext, err error) (string, error) {
+	if errCtx.LocalSchema == nil || errCtx.RemoteSchema == nil {
+		return "", nil
+	}
+
+	content, yamlErr := generateErrorReportContent(errCtx, err)
+	if yamlErr != nil {
+		return "", fmt.Errorf("failed to generate error report: %w", yamlErr)
+	}
+
+	tmpFile, fileErr := os.CreateTemp("", "scurry-push-error-*.yaml")
+	if fileErr != nil {
+		return "", fmt.Errorf("failed to create error report file: %w", fileErr)
+	}
+	defer tmpFile.Close()
+
+	if _, fileErr := tmpFile.Write(content); fileErr != nil {
+		return "", fmt.Errorf("failed to write error report: %w", fileErr)
+	}
+
+	return tmpFile.Name(), nil
+}
+
 func doPush(ctx context.Context) error {
 
 	client, err := db.Connect(ctx, flags.DbUrl)
@@ -91,11 +146,20 @@ func doPush(ctx context.Context) error {
 		Force:         flags.Force,
 	}
 
-	_, err = executePush(ctx, opts)
+	errCtx := &ErrorContext{}
+	_, err = executePush(ctx, opts, errCtx)
+	if err != nil {
+		reportPath, reportErr := writeErrorReport(errCtx, err)
+		if reportErr != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Failed to write error report: %s", reportErr)))
+		} else if reportPath != "" {
+			fmt.Println(ui.Info(fmt.Sprintf("Error report written to: %s", reportPath)))
+		}
+	}
 	return err
 }
 
-func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
+func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*PushResult, error) {
 	// Load local schema from files
 	if opts.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", opts.DefinitionDir)))
@@ -111,6 +175,7 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load local schema: %w", err)
 	}
+	errCtx.LocalSchema = localSchema
 
 	if opts.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
@@ -126,6 +191,7 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load database schema: %w", err)
 	}
+	errCtx.RemoteSchema = remoteSchema
 
 	if opts.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in database",
@@ -164,6 +230,7 @@ func executePush(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate migrations: %w", err)
 	}
+	errCtx.Statements = statements
 
 	if opts.Verbose {
 		fmt.Println()
