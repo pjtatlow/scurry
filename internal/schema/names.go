@@ -33,3 +33,9 @@ func getObjectName(name *tree.UnresolvedObjectName) (string, string) {
 
 	return schemaName, objectName
 }
+
+func getTriggerName(trigger *tree.CreateTrigger) (schemaName string, tableName string, triggerName string) {
+	schemaName, tableName = getObjectName(trigger.TableName)
+	triggerName = string(trigger.Name)
+	return schemaName, tableName, triggerName
+}
