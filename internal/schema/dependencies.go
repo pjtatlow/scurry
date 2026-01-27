@@ -26,10 +26,13 @@ func getDependencyNames(stmt tree.Statement) set.Set[string] {
 		return getAlterTableDependencies(stmt)
 	case *tree.CreateIndex:
 		return getIndexDependencies(stmt.Table, stmt.Columns, stmt.Storing)
+	case *tree.CreateTrigger:
+		return getCreateTriggerDependencies(stmt)
 
 	// Drop statements have no dependencies, if we made one, then the objects already exist
 	// Can't think of a situation where we would create an object, then need to drop it in the same schema change...
 	case *tree.DropRoutine:
+	case *tree.DropTrigger:
 	case *tree.DropTable:
 	case *tree.DropSequence:
 	case *tree.DropType:
@@ -127,6 +130,19 @@ func getCreateSequenceDependencies(stmt *tree.CreateSequence) set.Set[string] {
 	deps.Add("schema:" + schemaName)
 	// TODO: find dependencies in the sequence definition
 	_ = stmt
+
+	return deps
+}
+
+func getCreateTriggerDependencies(stmt *tree.CreateTrigger) set.Set[string] {
+	deps := set.New[string]()
+
+	schemaName, tableName := getObjectName(stmt.TableName)
+	deps.Add("schema:" + schemaName)
+	deps.Add(schemaName + "." + tableName)
+	if schemaName == "public" {
+		deps.Add(tableName)
+	}
 
 	return deps
 }

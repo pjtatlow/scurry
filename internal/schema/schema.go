@@ -15,7 +15,7 @@ import (
 
 type CreateObjectStatement interface {
 	tree.Statement
-	*tree.CreateTable | *tree.CreateType | *tree.CreateSequence | *tree.CreateView | *tree.CreateRoutine | *tree.CreateSchema
+	*tree.CreateTable | *tree.CreateType | *tree.CreateSequence | *tree.CreateView | *tree.CreateRoutine | *tree.CreateSchema | *tree.CreateTrigger
 }
 
 // Schema represents the complete database schema
@@ -24,6 +24,7 @@ type Schema struct {
 	Schemas            []ObjectSchema[*tree.CreateSchema]
 	Sequences          []ObjectSchema[*tree.CreateSequence]
 	Tables             []ObjectSchema[*tree.CreateTable]
+	Triggers           []ObjectSchema[*tree.CreateTrigger]
 	Types              []ObjectSchema[*tree.CreateType]
 	Views              []ObjectSchema[*tree.CreateView]
 	OriginalStatements []string // Original SQL statement strings in order
@@ -46,6 +47,7 @@ func (o *ObjectSchema[T]) ResolvedName() string {
 func NewSchema(statements ...tree.Statement) *Schema {
 	schema := &Schema{
 		Tables:             make([]ObjectSchema[*tree.CreateTable], 0),
+		Triggers:           make([]ObjectSchema[*tree.CreateTrigger], 0),
 		Types:              make([]ObjectSchema[*tree.CreateType], 0),
 		Schemas:            make([]ObjectSchema[*tree.CreateSchema], 0),
 		Sequences:          make([]ObjectSchema[*tree.CreateSequence], 0),
@@ -111,6 +113,15 @@ func NewSchema(statements ...tree.Statement) *Schema {
 				Ast:    stmt,
 			}
 			schema.Routines = append(schema.Routines, obj)
+
+		case *tree.CreateTrigger:
+			schemaName, tableName, triggerName := getTriggerName(stmt)
+			obj := ObjectSchema[*tree.CreateTrigger]{
+				Name:   tableName + "." + triggerName,
+				Schema: schemaName,
+				Ast:    stmt,
+			}
+			schema.Triggers = append(schema.Triggers, obj)
 		}
 	}
 
@@ -215,8 +226,9 @@ func parseSQL(sql string) ([]tree.Statement, error) {
 		case *tree.CreateSequence:
 		case *tree.CreateView:
 		case *tree.CreateSchema:
+		case *tree.CreateTrigger:
 		default:
-			return nil, fmt.Errorf("unsupported DDL statement: %s.\nscurry currently supports:\n\tCREATE SCHEMA\n\tCREATE TABLE\n\tCREATE TYPE\n\tCREATE SEQUENCE\n\tCREATE (MATERIALIZED) VIEW\n\tCREATE FUNCTION\n\tCREATE PROCEDURE\nIndexes should be defined inline within CREATE TABLE statements",
+			return nil, fmt.Errorf("unsupported DDL statement: %s.\nscurry currently supports:\n\tCREATE SCHEMA\n\tCREATE TABLE\n\tCREATE TYPE\n\tCREATE SEQUENCE\n\tCREATE (MATERIALIZED) VIEW\n\tCREATE FUNCTION\n\tCREATE PROCEDURE\n\tCREATE TRIGGER\nIndexes should be defined inline within CREATE TABLE statements",
 				stmt.AST.StatementTag(),
 			)
 		}
