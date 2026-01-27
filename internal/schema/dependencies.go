@@ -144,6 +144,10 @@ func getCreateTriggerDependencies(stmt *tree.CreateTrigger) set.Set[string] {
 		deps.Add(tableName)
 	}
 
+	if stmt.When != nil {
+		deps = deps.Union(getExprColumnDeps(schemaName, tableName, stmt.When))
+	}
+
 	return deps
 }
 

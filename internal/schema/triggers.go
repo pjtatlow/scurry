@@ -37,10 +37,15 @@ func compareTriggers(local, remote *Schema) []Difference {
 					DropBehavior: tree.DropRestrict,
 				}
 				diffs = append(diffs, Difference{
-					Type:                DiffTypeTriggerModified,
-					ObjectName:          name,
-					Description:         fmt.Sprintf("Trigger '%s' modified", name),
-					MigrationStatements: []tree.Statement{drop, localTrigger.Ast},
+					Type:        DiffTypeTriggerModified,
+					ObjectName:  name,
+					Description: fmt.Sprintf("Trigger '%s' modified", name),
+					MigrationStatements: []tree.Statement{
+						drop,
+						&tree.CommitTransaction{},
+						&tree.BeginTransaction{},
+						localTrigger.Ast,
+					},
 				})
 			}
 		}
