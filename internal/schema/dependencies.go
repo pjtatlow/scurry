@@ -56,7 +56,7 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 
 		switch d := def.(type) {
 		case *tree.ColumnTableDef:
-			deps = addColumnDeps(d, deps)
+			deps = addColumnDeps(schemaName, tableName, d, deps)
 		case *tree.ForeignKeyConstraintTableDef:
 			schema, table := getTableName(d.Table)
 			if table != tableName {
@@ -77,9 +77,12 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 	return deps
 }
 
-func addColumnDeps(d *tree.ColumnTableDef, deps set.Set[string]) set.Set[string] {
+func addColumnDeps(schemaName, tableName string, d *tree.ColumnTableDef, deps set.Set[string]) set.Set[string] {
 	if d.Computed.Computed {
-		deps = deps.Union(getExprDeps(d.Computed.Expr))
+		// Computed column expressions reference other columns in the same table,
+		// so we need to use getExprColumnDeps to properly prefix column references
+		// with the full table path (e.g., "public.table.column").
+		deps = deps.Union(getExprColumnDeps(schemaName, tableName, d.Computed.Expr))
 	}
 	if d.DefaultExpr.Expr != nil {
 		deps = deps.Union(getExprDeps(d.DefaultExpr.Expr))
@@ -159,7 +162,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 	for _, cmd := range stmt.Cmds {
 		switch c := cmd.(type) {
 		case *tree.AlterTableAddColumn:
-			deps = addColumnDeps(c.ColumnDef, deps)
+			deps = addColumnDeps(schemaName, tableName, c.ColumnDef, deps)
 		case *tree.AlterTableAlterColumnType:
 			if name, ok := getResolvableTypeReferenceDepName(c.ToType); ok {
 				deps.Add(name)

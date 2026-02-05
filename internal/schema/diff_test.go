@@ -382,6 +382,73 @@ func TestMigrationOrderingDropTableBeforeDropType(t *testing.T) {
 	}
 }
 
+func TestMigrationOrderingAddComputedColumnDependency(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteTables []string
+		localTables  []string
+		// wantOrder specifies substrings that must appear in order in the migration output
+		wantOrder []string
+	}{
+		{
+			name: "add regular column before computed column that depends on it",
+			remoteTables: []string{
+				"CREATE TABLE inventory (id INT NOT NULL, quantity INT8 NOT NULL, CONSTRAINT inventory_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				"CREATE TABLE inventory (id INT NOT NULL, quantity INT8 NOT NULL, committed INT8 DEFAULT 0 NOT NULL, available INT8 AS (quantity - committed) STORED NOT NULL, CONSTRAINT inventory_pkey PRIMARY KEY (id))",
+			},
+			// "committed" column must be added before "available" computed column that references it
+			wantOrder: []string{"committed", "available"},
+		},
+		{
+			name: "computed column depends on multiple new columns",
+			remoteTables: []string{
+				"CREATE TABLE prices (id INT NOT NULL, CONSTRAINT prices_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				"CREATE TABLE prices (id INT NOT NULL, base_price INT8 NOT NULL, discount INT8 DEFAULT 0 NOT NULL, final_price INT8 AS (base_price - discount) STORED NOT NULL, CONSTRAINT prices_pkey PRIMARY KEY (id))",
+			},
+			// Both base_price and discount must be added before final_price
+			wantOrder: []string{"base_price", "final_price"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(nil, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(nil, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			// Join all migrations into a single string to check ordering
+			allDDL := strings.Join(migrations, "\n")
+
+			// Verify that wantOrder substrings appear in the correct order
+			lastIndex := -1
+			for _, want := range tt.wantOrder {
+				index := strings.Index(allDDL[lastIndex+1:], want)
+				if index == -1 {
+					t.Errorf("expected %q to appear in migration output after position %d.\nGot:\n%s", want, lastIndex, allDDL)
+					break
+				}
+				// Adjust index to be relative to the full string
+				index = lastIndex + 1 + index
+				lastIndex = index
+			}
+		})
+	}
+}
+
 func TestComparisonResult_Summary(t *testing.T) {
 	tests := []struct {
 		name         string
