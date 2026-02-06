@@ -157,6 +157,154 @@ func TestCheckTableForeignKeyIndexes(t *testing.T) {
 	}
 }
 
+func TestCheckTableNullableUniqueColumns(t *testing.T) {
+	tests := []struct {
+		name       string
+		tableSQL   string
+		wantIssues int
+	}{
+		{
+			name: "unique constraint with all NOT NULL columns",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING NOT NULL,
+				UNIQUE (email)
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "unique constraint with nullable column",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING,
+				UNIQUE (email)
+			)`,
+			wantIssues: 1,
+		},
+		{
+			name: "unique constraint with multiple columns one nullable",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				tenant_id INT NOT NULL,
+				email STRING,
+				UNIQUE (tenant_id, email)
+			)`,
+			wantIssues: 1,
+		},
+		{
+			name: "unique constraint with multiple nullable columns",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				first_name STRING,
+				last_name STRING,
+				UNIQUE (first_name, last_name)
+			)`,
+			wantIssues: 2,
+		},
+		{
+			name: "primary key columns are not flagged",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				name STRING
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "composite primary key not flagged",
+			tableSQL: `CREATE TABLE order_items (
+				order_id INT,
+				item_id INT,
+				PRIMARY KEY (order_id, item_id)
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "multiple unique constraints mixed",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING NOT NULL,
+				phone STRING,
+				UNIQUE (email),
+				UNIQUE (phone)
+			)`,
+			wantIssues: 1,
+		},
+		{
+			name: "no unique constraints",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				name STRING,
+				INDEX idx_name (name)
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "explicitly NULL column in unique constraint",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING NULL,
+				UNIQUE (email)
+			)`,
+			wantIssues: 1,
+		},
+		{
+			name: "nullable column with WHERE IS NOT NULL predicate",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING,
+				UNIQUE INDEX idx_email (email) WHERE email IS NOT NULL
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "multiple nullable columns all guarded by WHERE IS NOT NULL",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING,
+				phone STRING,
+				UNIQUE INDEX idx_both (email, phone) WHERE email IS NOT NULL AND phone IS NOT NULL
+			)`,
+			wantIssues: 0,
+		},
+		{
+			name: "multiple nullable columns only one guarded by WHERE IS NOT NULL",
+			tableSQL: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING,
+				phone STRING,
+				UNIQUE INDEX idx_both (email, phone) WHERE email IS NOT NULL
+			)`,
+			wantIssues: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stmts, err := parser.Parse(tt.tableSQL)
+			if err != nil {
+				t.Fatalf("failed to parse SQL: %v", err)
+			}
+
+			if len(stmts) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(stmts))
+			}
+
+			createTable, ok := stmts[0].AST.(*tree.CreateTable)
+			if !ok {
+				t.Fatalf("expected CreateTable, got %T", stmts[0].AST)
+			}
+
+			issues := checkTableNullableUniqueColumns("test_table", createTable)
+
+			if len(issues) != tt.wantIssues {
+				t.Errorf("expected %d issues, got %d: %+v", tt.wantIssues, len(issues), issues)
+			}
+		})
+	}
+}
+
 func TestAllPrefixes(t *testing.T) {
 	tests := []struct {
 		name string

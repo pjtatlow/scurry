@@ -21,7 +21,8 @@ var lintCmd = &cobra.Command{
 	Long: `Lint the local schema for potential issues.
 
 Currently checks:
-  - Foreign keys without covering indexes (can cause full table scans)`,
+  - Foreign keys without covering indexes (can cause full table scans)
+  - Unique indexes/constraints with nullable columns (NULL != NULL, so uniqueness is not enforced)`,
 	RunE: lint,
 }
 
@@ -69,7 +70,9 @@ func doLint(ctx context.Context) error {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 
-	issues := checkForeignKeyIndexes(localSchema)
+	var issues []LintIssue
+	issues = append(issues, checkForeignKeyIndexes(localSchema)...)
+	issues = append(issues, checkNullableUniqueColumns(localSchema)...)
 
 	if len(issues) == 0 {
 		fmt.Println(ui.Success("✓ No issues found!"))
@@ -221,4 +224,97 @@ func formatColumnList(cols []string) string {
 		result += ", " + col
 	}
 	return result
+}
+
+// checkNullableUniqueColumns checks that unique indexes/constraints don't contain nullable columns.
+// In SQL, NULL != NULL, so a unique constraint on a nullable column doesn't actually enforce uniqueness
+// for NULL values — multiple rows can have NULL in the same unique column.
+func checkNullableUniqueColumns(s *schema.Schema) []LintIssue {
+	var issues []LintIssue
+
+	for _, table := range s.Tables {
+		tableName := table.ResolvedName()
+		tableIssues := checkTableNullableUniqueColumns(tableName, table.Ast)
+		issues = append(issues, tableIssues...)
+	}
+
+	return issues
+}
+
+func checkTableNullableUniqueColumns(tableName string, table *tree.CreateTable) []LintIssue {
+	var issues []LintIssue
+
+	// Build a map of column name -> column definition for nullability lookups
+	columns := make(map[string]*tree.ColumnTableDef)
+	for _, def := range table.Defs {
+		col, ok := def.(*tree.ColumnTableDef)
+		if !ok {
+			continue
+		}
+		columns[col.Name.Normalize()] = col
+	}
+
+	for _, def := range table.Defs {
+		switch d := def.(type) {
+		case *tree.UniqueConstraintTableDef:
+			// Skip primary keys — PK columns are implicitly NOT NULL
+			if d.PrimaryKey {
+				continue
+			}
+			notNullGuarded := collectIsNotNullColumns(d.Predicate)
+			checkUniqueColumnsNullability(tableName, d.Name.Normalize(), getIndexKeyColumns(d.Columns), columns, notNullGuarded, &issues)
+
+		}
+	}
+
+	return issues
+}
+
+// collectIsNotNullColumns extracts column names guarded by IS NOT NULL in a predicate expression.
+// It handles single IS NOT NULL expressions and AND-combined expressions.
+func collectIsNotNullColumns(predicate tree.Expr) map[string]bool {
+	cols := make(map[string]bool)
+	collectIsNotNullColumnsRecursive(predicate, cols)
+	return cols
+}
+
+func collectIsNotNullColumnsRecursive(expr tree.Expr, cols map[string]bool) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *tree.IsNotNullExpr:
+		if name, ok := e.Expr.(*tree.UnresolvedName); ok {
+			cols[name.String()] = true
+		}
+	case *tree.AndExpr:
+		collectIsNotNullColumnsRecursive(e.Left, cols)
+		collectIsNotNullColumnsRecursive(e.Right, cols)
+	}
+}
+
+func checkUniqueColumnsNullability(tableName, constraintName string, cols []string, columns map[string]*tree.ColumnTableDef, notNullGuarded map[string]bool, issues *[]LintIssue) {
+	for _, colName := range cols {
+		col, ok := columns[colName]
+		if !ok {
+			continue
+		}
+		if col.Nullable.Nullability == tree.NotNull {
+			continue
+		}
+		// Skip columns that are guarded by a WHERE col IS NOT NULL predicate
+		if notNullGuarded[colName] {
+			continue
+		}
+		// Column is nullable (either explicitly NULL or default/silent null)
+		if constraintName == "" {
+			constraintName = fmt.Sprintf("unique_%s", formatColumnList(cols))
+		}
+		*issues = append(*issues, LintIssue{
+			Table:       tableName,
+			Constraint:  constraintName,
+			Description: fmt.Sprintf("Unique constraint on (%s) includes nullable column %q (NULL values are not considered equal, so uniqueness is not enforced for NULLs)", formatColumnList(cols), colName),
+			Suggestion:  fmt.Sprintf("Make column %q NOT NULL, or add a partial unique index with a WHERE %s IS NOT NULL clause", colName, colName),
+		})
+	}
 }
