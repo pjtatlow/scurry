@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -58,6 +59,13 @@ func (c *Client) Close() error {
 		return c.db.Close()
 	}
 	return nil
+}
+
+// SetStatementTimeout sets the session-level statement timeout.
+func (c *Client) SetStatementTimeout(ctx context.Context, d time.Duration) error {
+	ms := int64(d / time.Millisecond)
+	_, err := c.db.ExecContext(ctx, fmt.Sprintf("SET statement_timeout = '%dms'", ms))
+	return err
 }
 
 // GetDB returns the underlying database connection
