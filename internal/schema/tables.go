@@ -128,6 +128,10 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
 	diffs = append(diffs, columnDiffs...)
 
+	// Remove indexes on dropped columns before comparing - these will be
+	// automatically dropped when the column is dropped.
+	removeIndexesOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.indexes)
+
 	// Compare remaining indexes
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
 	diffs = append(diffs, indexDiffs...)
@@ -871,6 +875,34 @@ func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*t
 		for _, col := range getConstraintColumns(constraint) {
 			if droppedCols[col] {
 				delete(remoteConstraints, constraintName)
+				break
+			}
+		}
+	}
+}
+
+// removeIndexesOnDroppedColumns removes from remoteIndexes any indexes
+// that reference columns being dropped (columns in remote but not in local).
+// This prevents generating DROP INDEX statements for indexes that will
+// be automatically dropped when their column is dropped.
+func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteIndexes map[string]*tree.IndexTableDef) {
+	// Find dropped columns
+	droppedCols := make(map[string]bool)
+	for colName := range remoteColumns {
+		if _, existsInLocal := localColumns[colName]; !existsInLocal {
+			droppedCols[colName] = true
+		}
+	}
+
+	if len(droppedCols) == 0 {
+		return
+	}
+
+	// Remove indexes that reference any dropped column
+	for indexName, index := range remoteIndexes {
+		for _, col := range getIndexColumnNames(index) {
+			if droppedCols[col] {
+				delete(remoteIndexes, indexName)
 				break
 			}
 		}

@@ -1206,6 +1206,110 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 	}
 }
 
+func TestPushDropColumnWithIndex(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialSchema map[string]string
+		updatedSchema map[string]string
+	}{
+		{
+			name: "drop column with index",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						email TEXT,
+						INDEX email_idx (email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL
+					);
+				`,
+			},
+		},
+		{
+			name: "drop column with multi-column index",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						email TEXT,
+						INDEX name_email_idx (name, email)
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL
+					);
+				`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			client, err := db.GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			fs := afero.NewMemMapFs()
+			schemaDir := "/schema"
+
+			writeSchemaFiles := func(files map[string]string) {
+				fs.RemoveAll(schemaDir)
+				err := fs.MkdirAll(schemaDir, 0755)
+				require.NoError(t, err)
+
+				for path, content := range files {
+					fullPath := filepath.Join(schemaDir, path)
+					dir := filepath.Dir(fullPath)
+					err := fs.MkdirAll(dir, 0755)
+					require.NoError(t, err)
+					err = afero.WriteFile(fs, fullPath, []byte(content), 0644)
+					require.NoError(t, err)
+				}
+			}
+
+			// Push initial schema with column and index
+			writeSchemaFiles(tt.initialSchema)
+
+			opts := PushOptions{
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
+			}
+
+			result, err := executePush(ctx, opts, &ErrorContext{})
+			require.NoError(t, err)
+			assert.True(t, result.HasChanges, "Initial push should have changes")
+
+			// Push updated schema that removes the column
+			// This should succeed - the index should be dropped with the column,
+			// not as a separate statement that causes an error
+			writeSchemaFiles(tt.updatedSchema)
+
+			result, err = executePush(ctx, opts, &ErrorContext{})
+			require.NoError(t, err, "Push should succeed - dropping column should not cause index drop error")
+			assert.True(t, result.HasChanges, "Updated push should have changes")
+		})
+	}
+}
+
 // TestPushRowLevelTTL tests adding row-level TTL to an existing table.
 func TestPushRowLevelTTL(t *testing.T) {
 
