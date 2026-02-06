@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
@@ -17,8 +18,9 @@ import (
 )
 
 var (
-	executeDryRun bool
-	executeForce  bool
+	executeDryRun           bool
+	executeForce            bool
+	executeStatementTimeout time.Duration
 )
 
 var migrationExecuteCmd = &cobra.Command{
@@ -50,6 +52,7 @@ func init() {
 
 	migrationExecuteCmd.Flags().BoolVar(&executeDryRun, "dry-run", false, "Show what would be executed without applying")
 	migrationExecuteCmd.Flags().BoolVar(&executeForce, "force", false, "Skip confirmation prompt")
+	migrationExecuteCmd.Flags().DurationVar(&executeStatementTimeout, "statement-timeout", 0, "Set statement timeout (e.g., 30s, 5m, 1h)")
 }
 
 func runMigrationExecute(cmd *cobra.Command, args []string) error {
@@ -72,6 +75,13 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	defer dbClient.Close()
+
+	// Set statement timeout if specified
+	if executeStatementTimeout > 0 {
+		if err := dbClient.SetStatementTimeout(ctx, executeStatementTimeout); err != nil {
+			return fmt.Errorf("failed to set statement timeout: %w", err)
+		}
+	}
 
 	// Initialize migration history table
 	if err := dbClient.InitMigrationHistory(ctx); err != nil {
