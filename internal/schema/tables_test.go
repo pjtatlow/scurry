@@ -989,3 +989,75 @@ func TestCompareTablesColumnTypeChangeWithIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
+	tests := []struct {
+		name               string
+		localTable         string
+		remoteTable        string
+		wantDiffCount      int
+		wantDDLContains    []string
+		wantDDLNotContains []string
+	}{
+		{
+			name:               "drop column with index suppresses index drop",
+			localTable:         "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			remoteTable:        "CREATE TABLE users (id INT PRIMARY KEY, name STRING, email STRING, INDEX email_idx (email))",
+			wantDiffCount:      1,
+			wantDDLContains:    []string{"DROP COLUMN"},
+			wantDDLNotContains: []string{"DROP INDEX"},
+		},
+		{
+			name:               "drop column referenced in multi-column index suppresses index drop",
+			localTable:         "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			remoteTable:        "CREATE TABLE users (id INT PRIMARY KEY, name STRING, email STRING, INDEX name_email_idx (name, email))",
+			wantDiffCount:      1,
+			wantDDLContains:    []string{"DROP COLUMN"},
+			wantDDLNotContains: []string{"DROP INDEX"},
+		},
+		{
+			name:               "drop column without index works normally",
+			localTable:         "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			remoteTable:        "CREATE TABLE users (id INT PRIMARY KEY, name STRING, email STRING)",
+			wantDiffCount:      1,
+			wantDDLContains:    []string{"DROP COLUMN"},
+			wantDDLNotContains: []string{"DROP INDEX"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			localSchema := createSchemaWithTables([]string{tt.localTable})
+			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
+
+			diffs := compareTables(localSchema, remoteSchema)
+
+			if len(diffs) != tt.wantDiffCount {
+				t.Fatalf("expected %d diffs, got %d", tt.wantDiffCount, len(diffs))
+				for i, diff := range diffs {
+					t.Logf("  diff[%d]: %s - %s", i, diff.Type, diff.Description)
+				}
+			}
+
+			allDDL := ""
+			for _, diff := range diffs {
+				for _, stmt := range diff.MigrationStatements {
+					allDDL += stmt.String() + "\n"
+				}
+			}
+
+			for _, expected := range tt.wantDDLContains {
+				if !strings.Contains(allDDL, expected) {
+					t.Errorf("DDL should contain %q.\nGot:\n%s", expected, allDDL)
+				}
+			}
+
+			for _, notExpected := range tt.wantDDLNotContains {
+				if strings.Contains(allDDL, notExpected) {
+					t.Errorf("DDL should NOT contain %q.\nGot:\n%s", notExpected, allDDL)
+				}
+			}
+		})
+	}
+}
