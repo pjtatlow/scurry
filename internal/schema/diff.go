@@ -36,6 +36,10 @@ const (
 	DiffTypeTableModified       DiffType = "table_modified"
 	DiffTypeTableColumnModified DiffType = "table_column_modified"
 	DiffTypeColumnTypeChanged   DiffType = "column_type_changed"
+
+	DiffTypeTriggerAdded    DiffType = "trigger_added"
+	DiffTypeTriggerRemoved  DiffType = "trigger_removed"
+	DiffTypeTriggerModified DiffType = "trigger_modified"
 )
 
 // Difference represents a single schema difference
@@ -67,6 +71,7 @@ func Compare(local, remote *Schema) *ComparisonResult {
 	result.Differences = append(result.Differences, compareRoutines(local, remote)...)
 	result.Differences = append(result.Differences, compareTables(local, remote)...)
 	result.Differences = append(result.Differences, compareViews(local, remote)...)
+	result.Differences = append(result.Differences, compareTriggers(local, remote)...)
 
 	return &result
 }
