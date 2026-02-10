@@ -1310,6 +1310,111 @@ func TestPushDropColumnWithIndex(t *testing.T) {
 	}
 }
 
+func TestPushAddPartialIndexOnNewColumn(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialSchema map[string]string
+		updatedSchema map[string]string
+	}{
+		{
+			name: "add column and partial unique index referencing it in WHERE clause",
+			initialSchema: map[string]string{
+				"tables/message_attachment.sql": `
+					CREATE TABLE message_attachment (
+						id INT PRIMARY KEY,
+						message_id INT8
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/message_attachment.sql": `
+					CREATE TABLE message_attachment (
+						id INT PRIMARY KEY,
+						message_id INT8,
+						external_attachment_id STRING,
+						UNIQUE INDEX idx_attachment_message_external (message_id, external_attachment_id)
+							WHERE message_id IS NOT NULL AND external_attachment_id IS NOT NULL
+					);
+				`,
+			},
+		},
+		{
+			name: "add column referenced only in partial index WHERE clause",
+			initialSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/users.sql": `
+					CREATE TABLE users (
+						id INT PRIMARY KEY,
+						name TEXT NOT NULL,
+						is_active BOOL,
+						INDEX idx_active_users (name) WHERE is_active = true
+					);
+				`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			client, err := db.GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			fs := afero.NewMemMapFs()
+			schemaDir := "/schema"
+
+			writeSchemaFiles := func(files map[string]string) {
+				fs.RemoveAll(schemaDir)
+				err := fs.MkdirAll(schemaDir, 0755)
+				require.NoError(t, err)
+
+				for path, content := range files {
+					fullPath := filepath.Join(schemaDir, path)
+					dir := filepath.Dir(fullPath)
+					err := fs.MkdirAll(dir, 0755)
+					require.NoError(t, err)
+					err = afero.WriteFile(fs, fullPath, []byte(content), 0644)
+					require.NoError(t, err)
+				}
+			}
+
+			// Push initial schema
+			writeSchemaFiles(tt.initialSchema)
+
+			opts := PushOptions{
+				Fs:            fs,
+				DefinitionDir: schemaDir,
+				DbClient:      client,
+				Verbose:       false,
+				DryRun:        false,
+				Force:         true,
+			}
+
+			result, err := executePush(ctx, opts, &ErrorContext{})
+			require.NoError(t, err)
+			assert.True(t, result.HasChanges, "Initial push should have changes")
+
+			// Push updated schema that adds the column and partial index.
+			// Without the fix, this fails with:
+			//   pq: cannot create partial index on column "..." which is not public
+			writeSchemaFiles(tt.updatedSchema)
+
+			result, err = executePush(ctx, opts, &ErrorContext{})
+			require.NoError(t, err, "Push should succeed - partial index on new column needs a transaction boundary")
+			assert.True(t, result.HasChanges, "Updated push should have changes")
+		})
+	}
+}
+
 // TestPushRowLevelTTL tests adding row-level TTL to an existing table.
 func TestPushRowLevelTTL(t *testing.T) {
 

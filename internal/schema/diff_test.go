@@ -449,6 +449,153 @@ func TestMigrationOrderingAddComputedColumnDependency(t *testing.T) {
 	}
 }
 
+func TestPartialIndexWhereClauseColumnDependencies(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		wantDep string
+	}{
+		{
+			name:    "WHERE clause column only in predicate is tracked as dependency",
+			sql:     "CREATE INDEX idx_active_users ON public.users (name) WHERE is_active = true",
+			wantDep: "public.users.is_active",
+		},
+		{
+			name:    "WHERE clause IS NOT NULL column is tracked as dependency",
+			sql:     "CREATE UNIQUE INDEX idx_email ON public.users (email) WHERE email IS NOT NULL",
+			wantDep: "public.users.email",
+		},
+		{
+			name:    "WHERE clause with multiple columns tracks all of them",
+			sql:     "CREATE UNIQUE INDEX idx_msg ON public.message_attachment (message_id, external_attachment_id) WHERE message_id IS NOT NULL AND external_attachment_id IS NOT NULL",
+			wantDep: "public.message_attachment.external_attachment_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := parser.Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("failed to parse SQL: %v", err)
+			}
+			stmt := parsed[0].AST
+
+			deps := getDependencyNames(stmt)
+
+			if !deps.Contains(tt.wantDep) {
+				t.Errorf("expected dependency %q not found.\nGot deps: %v", tt.wantDep, deps)
+			}
+		})
+	}
+}
+
+func TestPartialIndexOnNewColumnGetsTransactionBoundary(t *testing.T) {
+	tests := []struct {
+		name            string
+		remoteTables    []string
+		localTables     []string
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "new partial index on new column gets COMMIT/BEGIN boundary",
+			remoteTables: []string{
+				"CREATE TABLE message_attachment (id INT NOT NULL, message_id INT8, CONSTRAINT message_attachment_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				`CREATE TABLE message_attachment (
+					id INT NOT NULL,
+					message_id INT8,
+					external_attachment_id STRING,
+					CONSTRAINT message_attachment_pkey PRIMARY KEY (id),
+					UNIQUE INDEX idx_attachment_message_external (message_id, external_attachment_id)
+						WHERE message_id IS NOT NULL AND external_attachment_id IS NOT NULL
+				)`,
+			},
+			wantContains: []string{"COMMIT", "BEGIN", "CREATE UNIQUE INDEX"},
+		},
+		{
+			name: "partial index WHERE clause references only new column not in key",
+			remoteTables: []string{
+				"CREATE TABLE users (id INT NOT NULL, name STRING, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				`CREATE TABLE users (
+					id INT NOT NULL,
+					name STRING,
+					is_active BOOL,
+					CONSTRAINT users_pkey PRIMARY KEY (id),
+					INDEX idx_active_users (name) WHERE is_active = true
+				)`,
+			},
+			wantContains: []string{"COMMIT", "BEGIN", "CREATE INDEX"},
+		},
+		{
+			name: "non-partial index on new column does not get COMMIT/BEGIN",
+			remoteTables: []string{
+				"CREATE TABLE users (id INT NOT NULL, name STRING, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				`CREATE TABLE users (
+					id INT NOT NULL,
+					name STRING,
+					email STRING,
+					CONSTRAINT users_pkey PRIMARY KEY (id),
+					INDEX idx_email (email)
+				)`,
+			},
+			wantNotContains: []string{"COMMIT", "BEGIN"},
+		},
+		{
+			name: "partial index on existing columns does not get COMMIT/BEGIN",
+			remoteTables: []string{
+				"CREATE TABLE users (id INT NOT NULL, email STRING, CONSTRAINT users_pkey PRIMARY KEY (id))",
+			},
+			localTables: []string{
+				`CREATE TABLE users (
+					id INT NOT NULL,
+					email STRING,
+					CONSTRAINT users_pkey PRIMARY KEY (id),
+					UNIQUE INDEX idx_email (email) WHERE email IS NOT NULL
+				)`,
+			},
+			wantNotContains: []string{"COMMIT", "BEGIN"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(nil, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(nil, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			allDDL := strings.Join(migrations, "\n")
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(allDDL, want) {
+					t.Errorf("expected migration to contain %q.\nGot:\n%s", want, allDDL)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(allDDL, notWant) {
+					t.Errorf("expected migration to NOT contain %q.\nGot:\n%s", notWant, allDDL)
+				}
+			}
+		})
+	}
+}
+
 func TestComparisonResult_Summary(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -25,7 +25,7 @@ func getDependencyNames(stmt tree.Statement) set.Set[string] {
 	case *tree.AlterTable:
 		return getAlterTableDependencies(stmt)
 	case *tree.CreateIndex:
-		return getIndexDependencies(stmt.Table, stmt.Columns, stmt.Storing)
+		return getIndexDependencies(stmt.Table, stmt.Columns, stmt.Storing, stmt.Predicate)
 
 	// Drop statements have no dependencies, if we made one, then the objects already exist
 	// Can't think of a situation where we would create an object, then need to drop it in the same schema change...
@@ -181,7 +181,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 
 			switch constraint := c.ConstraintDef.(type) {
 			case *tree.UniqueConstraintTableDef:
-				deps = deps.Union(getIndexDependencies(stmt.Table.ToTableName(), constraint.Columns, constraint.Storing))
+				deps = deps.Union(getIndexDependencies(stmt.Table.ToTableName(), constraint.Columns, constraint.Storing, constraint.Predicate))
 			case *tree.CheckConstraintTableDef:
 				deps = deps.Union(getExprColumnDeps(schemaName, tableName, constraint.Expr))
 			case *tree.ForeignKeyConstraintTableDef:
@@ -202,7 +202,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 				deps = deps.Union(getExprDeps(c.Expr))
 			}
 		case *tree.AlterTableAlterPrimaryKey:
-			deps = deps.Union(getIndexDependencies(stmt.Table.ToTableName(), c.Columns, tree.NameList{}))
+			deps = deps.Union(getIndexDependencies(stmt.Table.ToTableName(), c.Columns, tree.NameList{}, nil))
 
 		// These have no dependencies
 		case *tree.AlterTableDropColumn:
@@ -222,7 +222,7 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 	return deps
 }
 
-func getIndexDependencies(table tree.TableName, columns tree.IndexElemList, storing tree.NameList) set.Set[string] {
+func getIndexDependencies(table tree.TableName, columns tree.IndexElemList, storing tree.NameList, predicate tree.Expr) set.Set[string] {
 	deps := set.New[string]()
 
 	// Get table name
@@ -246,6 +246,11 @@ func getIndexDependencies(table tree.TableName, columns tree.IndexElemList, stor
 	// Index depends on all columns it stores
 	for _, col := range storing {
 		deps.Add(schemaName + "." + tableName + "." + col.Normalize())
+	}
+
+	// Index depends on all columns referenced in its WHERE clause
+	if predicate != nil {
+		deps = deps.Union(getExprColumnDeps(schemaName, tableName, predicate))
 	}
 
 	return deps
