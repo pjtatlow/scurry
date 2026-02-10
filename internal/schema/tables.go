@@ -124,6 +124,14 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	typeChangeDiffs := handleColumnTypeChanges(tableName, local.Table, localComponents, remoteComponents)
 	diffs = append(diffs, typeChangeDiffs...)
 
+	// Detect newly-added columns before comparing (needed for partial index transaction boundaries)
+	newColumns := make(map[string]bool)
+	for colName := range localComponents.columns {
+		if _, existsInRemote := remoteComponents.columns[colName]; !existsInRemote {
+			newColumns[colName] = true
+		}
+	}
+
 	// Compare remaining columns (type changes already handled above)
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
 	diffs = append(diffs, columnDiffs...)
@@ -134,7 +142,6 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 
 	// Compare remaining indexes
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
-	diffs = append(diffs, indexDiffs...)
 
 	// Remove constraints on dropped columns before comparing - these will be
 	// automatically dropped when the column is dropped, so we don't need to
@@ -143,6 +150,16 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 
 	// Compare remaining constraints
 	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
+
+	// CockroachDB requires columns to be "public" (committed) before they can be referenced
+	// in a partial index WHERE clause. If a new partial index references a newly-added column,
+	// we must inject a COMMIT/BEGIN transaction boundary before the CREATE INDEX statement.
+	if len(newColumns) > 0 {
+		addPartialIndexTransactionBoundaries(newColumns, indexDiffs)
+		addPartialIndexTransactionBoundaries(newColumns, constraintDiffs)
+	}
+
+	diffs = append(diffs, indexDiffs...)
 	diffs = append(diffs, constraintDiffs...)
 
 	// Compare storage params (TTL settings, etc.)
@@ -735,7 +752,8 @@ func findPrimaryKey(constraints map[string]tree.ConstraintTableDef) *tree.Unique
 	return nil
 }
 
-// getIndexColumnNames returns the column names referenced by an index.
+// getIndexColumnNames returns the column names referenced by an index,
+// including columns in the WHERE clause predicate.
 func getIndexColumnNames(index *tree.IndexTableDef) []string {
 	cols := make([]string, 0, len(index.Columns)+len(index.Storing))
 	for _, col := range index.Columns {
@@ -745,6 +763,9 @@ func getIndexColumnNames(index *tree.IndexTableDef) []string {
 	}
 	for _, col := range index.Storing {
 		cols = append(cols, col.Normalize())
+	}
+	if index.Predicate != nil {
+		cols = append(cols, getCheckConstraintColumns(index.Predicate)...)
 	}
 	return cols
 }
@@ -905,6 +926,37 @@ func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.
 				delete(remoteIndexes, indexName)
 				break
 			}
+		}
+	}
+}
+
+// addPartialIndexTransactionBoundaries prepends COMMIT/BEGIN to any CREATE INDEX
+// statement that has a WHERE predicate referencing a newly-added column.
+// CockroachDB requires columns to be fully "public" (committed) before they can
+// be referenced in a partial index WHERE clause.
+func addPartialIndexTransactionBoundaries(newColumns map[string]bool, diffs []Difference) {
+	for i, diff := range diffs {
+		needsBoundary := false
+		for _, stmt := range diff.MigrationStatements {
+			createIdx, ok := stmt.(*tree.CreateIndex)
+			if !ok || createIdx.Predicate == nil {
+				continue
+			}
+			for _, col := range getCheckConstraintColumns(createIdx.Predicate) {
+				if newColumns[col] {
+					needsBoundary = true
+					break
+				}
+			}
+			if needsBoundary {
+				break
+			}
+		}
+		if needsBoundary {
+			diffs[i].MigrationStatements = append(
+				[]tree.Statement{&tree.CommitTransaction{}, &tree.BeginTransaction{}},
+				diffs[i].MigrationStatements...,
+			)
 		}
 	}
 }

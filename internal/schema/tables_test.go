@@ -1023,6 +1023,31 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 			wantDDLContains:    []string{"DROP COLUMN"},
 			wantDDLNotContains: []string{"DROP INDEX"},
 		},
+		{
+			name:       "drop column referenced only in partial index WHERE clause suppresses index drop",
+			localTable: "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
+			remoteTable: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				name STRING,
+				is_active BOOL,
+				INDEX idx_active_users (name) WHERE is_active = true
+			)`,
+			wantDiffCount:      1,
+			wantDDLContains:    []string{"DROP COLUMN"},
+			wantDDLNotContains: []string{"DROP INDEX"},
+		},
+		{
+			name:       "drop column referenced in both index key and WHERE clause suppresses index drop",
+			localTable: "CREATE TABLE users (id INT PRIMARY KEY)",
+			remoteTable: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email STRING,
+				UNIQUE INDEX idx_email (email) WHERE email IS NOT NULL
+			)`,
+			wantDiffCount:      1,
+			wantDDLContains:    []string{"DROP COLUMN"},
+			wantDDLNotContains: []string{"DROP INDEX"},
+		},
 	}
 
 	for _, tt := range tests {
