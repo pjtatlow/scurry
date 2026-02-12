@@ -159,6 +159,15 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 		addPartialIndexTransactionBoundaries(newColumns, constraintDiffs)
 	}
 
+	// CockroachDB adds foreign key constraints asynchronously. If a new FK constraint and
+	// new indexes are added to the same table in the same transaction, CockroachDB will
+	// error with "referencing constraint ... in the middle of being added". We must inject
+	// a COMMIT/BEGIN boundary before any CREATE INDEX on the same table.
+	if hasNewForeignKeyConstraint(constraintDiffs) {
+		addCreateIndexTransactionBoundaries(indexDiffs)
+		addCreateIndexTransactionBoundaries(constraintDiffs)
+	}
+
 	diffs = append(diffs, indexDiffs...)
 	diffs = append(diffs, constraintDiffs...)
 
@@ -957,6 +966,44 @@ func addPartialIndexTransactionBoundaries(newColumns map[string]bool, diffs []Di
 				[]tree.Statement{&tree.CommitTransaction{}, &tree.BeginTransaction{}},
 				diffs[i].MigrationStatements...,
 			)
+		}
+	}
+}
+
+// hasNewForeignKeyConstraint checks if any of the constraint diffs contain an
+// ALTER TABLE ADD CONSTRAINT FOREIGN KEY statement.
+func hasNewForeignKeyConstraint(diffs []Difference) bool {
+	for _, diff := range diffs {
+		for _, stmt := range diff.MigrationStatements {
+			alterTable, ok := stmt.(*tree.AlterTable)
+			if !ok {
+				continue
+			}
+			for _, cmd := range alterTable.Cmds {
+				if addConstraint, ok := cmd.(*tree.AlterTableAddConstraint); ok {
+					if _, ok := addConstraint.ConstraintDef.(*tree.ForeignKeyConstraintTableDef); ok {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// addCreateIndexTransactionBoundaries prepends COMMIT/BEGIN to any diff that
+// contains a CREATE INDEX statement. This is used to separate CREATE INDEX from
+// ADD CONSTRAINT FOREIGN KEY on the same table within the same transaction.
+func addCreateIndexTransactionBoundaries(diffs []Difference) {
+	for i, diff := range diffs {
+		for _, stmt := range diff.MigrationStatements {
+			if _, ok := stmt.(*tree.CreateIndex); ok {
+				diffs[i].MigrationStatements = append(
+					[]tree.Statement{&tree.CommitTransaction{}, &tree.BeginTransaction{}},
+					diffs[i].MigrationStatements...,
+				)
+				break
+			}
 		}
 	}
 }
