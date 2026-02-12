@@ -596,6 +596,88 @@ func TestPartialIndexOnNewColumnGetsTransactionBoundary(t *testing.T) {
 	}
 }
 
+// TestForeignKeyConstraintAndIndexOnSameTableNeedTransactionBoundary reproduces
+// the CockroachDB error: "referencing constraint ... in the middle of being added, try again later"
+// This occurs when a new FK constraint and new indexes are added to the same table in the same
+// transaction. CockroachDB adds FK constraints asynchronously, so any subsequent schema change
+// on the same table (like CREATE INDEX) will fail.
+func TestForeignKeyConstraintAndIndexOnSameTableNeedTransactionBoundary(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteTables []string
+		localTables  []string
+		wantOrder    []string
+	}{
+		{
+			name: "new FK constraint and new index on same table get COMMIT/BEGIN boundary",
+			remoteTables: []string{
+				"CREATE TABLE public.storage_location_inventory (id INT8 NOT NULL, CONSTRAINT storage_location_inventory_pkey PRIMARY KEY (id ASC))",
+				`CREATE TABLE public.storage_location_inventory_adjustment (
+					id INT8 NOT NULL,
+					storage_location_inventory_id INT8 NOT NULL,
+					kind STRING NOT NULL,
+					reference_id STRING NULL,
+					quantity_delta INT8 NOT NULL,
+					committed_delta INT8 NOT NULL,
+					CONSTRAINT storage_location_inventory_adjustment_pkey PRIMARY KEY (id ASC)
+				)`,
+			},
+			localTables: []string{
+				"CREATE TABLE public.storage_location_inventory (id INT8 NOT NULL, CONSTRAINT storage_location_inventory_pkey PRIMARY KEY (id ASC))",
+				`CREATE TABLE public.storage_location_inventory_adjustment (
+					id INT8 NOT NULL,
+					storage_location_inventory_id INT8 NOT NULL,
+					kind STRING NOT NULL,
+					reference_id STRING NULL,
+					quantity_delta INT8 NOT NULL,
+					committed_delta INT8 NOT NULL,
+					CONSTRAINT storage_location_inventory_adjustment_pkey PRIMARY KEY (id ASC),
+					CONSTRAINT storage_location_inventory_adjustment_storage_location_inventory_id_fkey
+						FOREIGN KEY (storage_location_inventory_id) REFERENCES public.storage_location_inventory (id) ON DELETE CASCADE,
+					INDEX idx_storage_location_inventory_adjustment_location_kind (storage_location_inventory_id ASC, kind ASC),
+					INDEX idx_storage_location_inventory_adjustment_reference_id (reference_id ASC, storage_location_inventory_id ASC)
+						STORING (kind, quantity_delta, committed_delta)
+				)`,
+			},
+			// The ADD CONSTRAINT FK must be followed by COMMIT/BEGIN before the CREATE INDEX statements
+			wantOrder: []string{"ADD CONSTRAINT", "COMMIT", "BEGIN", "CREATE INDEX"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(nil, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(nil, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			allDDL := strings.Join(migrations, "\n")
+
+			// Verify that wantOrder substrings appear in the correct order
+			lastIndex := -1
+			for _, want := range tt.wantOrder {
+				index := strings.Index(allDDL[lastIndex+1:], want)
+				if index == -1 {
+					t.Errorf("expected %q to appear in migration output after position %d.\nGot:\n%s", want, lastIndex, allDDL)
+					break
+				}
+				// Adjust index to be relative to the full string
+				index = lastIndex + 1 + index
+				lastIndex = index
+			}
+		})
+	}
+}
+
 func TestComparisonResult_Summary(t *testing.T) {
 	tests := []struct {
 		name         string
