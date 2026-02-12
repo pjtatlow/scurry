@@ -405,6 +405,11 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 							},
 						},
 					},
+					// CockroachDB drops columns asynchronously. Without a transaction
+					// boundary, the ADD COLUMN fails with "column being dropped, try
+					// again later" because the column name is still in use.
+					&tree.CommitTransaction{},
+					&tree.BeginTransaction{},
 					&tree.AlterTable{
 						Table: tableRef.ToUnresolvedObjectName(),
 						Cmds: tree.AlterTableCmds{
