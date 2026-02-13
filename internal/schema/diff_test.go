@@ -778,6 +778,73 @@ func TestDropAndRecreateColumnNeedsTransactionBoundary(t *testing.T) {
 	}
 }
 
+// TestAlterTypeAddValueAndCheckConstraintNeedTransactionBoundary reproduces the CockroachDB error:
+// "invalid input value for enum <type>: <new_value>"
+// This occurs when a new enum value is added via ALTER TYPE ADD VALUE and a CHECK constraint
+// referencing that new value is added in the same transaction. CockroachDB requires the new enum
+// value to be committed before it can be used in a CHECK constraint expression.
+func TestAlterTypeAddValueAndCheckConstraintNeedTransactionBoundary(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteTypes  []string
+		remoteTables []string
+		localTypes   []string
+		localTables  []string
+		wantOrder    []string
+	}{
+		{
+			name:        "new enum value and check constraint referencing it need COMMIT/BEGIN boundary",
+			remoteTypes: []string{"CREATE TYPE status AS ENUM ('active', 'inactive')"},
+			remoteTables: []string{
+				"CREATE TABLE users (id INT8 NOT NULL, status status NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id ASC))",
+			},
+			localTypes: []string{"CREATE TYPE status AS ENUM ('active', 'inactive', 'suspended')"},
+			localTables: []string{
+				`CREATE TABLE users (
+					id INT8 NOT NULL,
+					status status NOT NULL,
+					CONSTRAINT users_pkey PRIMARY KEY (id ASC),
+					CONSTRAINT check_status CHECK (status != 'suspended'::public.status)
+				)`,
+			},
+			wantOrder: []string{"ADD VALUE", "COMMIT", "BEGIN", "CHECK"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(tt.localTypes, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(tt.remoteTypes, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			allDDL := strings.Join(migrations, "\n")
+
+			// Verify that wantOrder substrings appear in the correct order
+			lastIndex := -1
+			for _, want := range tt.wantOrder {
+				index := strings.Index(allDDL[lastIndex+1:], want)
+				if index == -1 {
+					t.Errorf("expected %q to appear in migration output after position %d.\nGot:\n%s", want, lastIndex, allDDL)
+					break
+				}
+				// Adjust index to be relative to the full string
+				index = lastIndex + 1 + index
+				lastIndex = index
+			}
+		})
+	}
+}
+
 func TestComparisonResult_Summary(t *testing.T) {
 	tests := []struct {
 		name         string

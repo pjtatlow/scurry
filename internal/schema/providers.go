@@ -119,8 +119,19 @@ func getProvidedNames(stmt tree.Statement) set.Set[string] {
 			}
 		}
 
-	// These are possible statements we could encounter, but don't provide anything.
 	case *tree.AlterType:
+		{
+			schemaName, typeName := getObjectName(s.Type)
+			if addVal, ok := s.Cmd.(*tree.AlterTypeAddValue); ok {
+				enumVal := string(addVal.NewVal)
+				names.Add(schemaName + "." + typeName + "." + enumVal)
+				if schemaName == "public" {
+					names.Add(typeName + "." + enumVal)
+				}
+			}
+		}
+
+	// These are possible statements we could encounter, but don't provide anything.
 	case *tree.DropRoutine:
 	case *tree.DropTable:
 	case *tree.DropSequence:

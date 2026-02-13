@@ -53,12 +53,12 @@ func TestGetExprDeps(t *testing.T) {
 		{
 			name:     "cast to custom type",
 			expr:     "'value'::myschema.mytype",
-			wantDeps: []string{"myschema.mytype"},
+			wantDeps: []string{"myschema.mytype", "myschema.mytype.value"},
 		},
 		{
 			name:     "cast to custom type without schema",
 			expr:     "'value'::mytype",
-			wantDeps: []string{"public.mytype"},
+			wantDeps: []string{"public.mytype", "public.mytype.value"},
 		},
 		{
 			name:     "cast to builtin type",

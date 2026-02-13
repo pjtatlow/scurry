@@ -139,6 +139,9 @@ func compareEnumTypes(name string, local, remote ObjectSchema[*tree.CreateType],
 			}
 			migrationDDL = append(migrationDDL, alter)
 		}
+		// CockroachDB requires new enum values to be committed before they can be
+		// referenced in expressions (e.g. CHECK constraints).
+		migrationDDL = append(migrationDDL, &tree.CommitTransaction{}, &tree.BeginTransaction{})
 		descParts = append(descParts, fmt.Sprintf("+%d values", len(added)))
 	}
 
