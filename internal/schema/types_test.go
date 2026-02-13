@@ -157,14 +157,14 @@ func TestCompareEnumTypes(t *testing.T) {
 			name:          "enum value added",
 			localType:     "CREATE TYPE status AS ENUM ('active', 'inactive', 'pending')",
 			remoteType:    "CREATE TYPE status AS ENUM ('active', 'inactive')",
-			wantStmtCount: 1,
+			wantStmtCount: 3, // 1 ADD VALUE + COMMIT/BEGIN
 			wantContains:  []string{"ALTER TYPE", "ADD VALUE", "'pending'"},
 		},
 		{
 			name:          "multiple enum values added",
 			localType:     "CREATE TYPE status AS ENUM ('active', 'inactive', 'pending', 'suspended')",
 			remoteType:    "CREATE TYPE status AS ENUM ('active', 'inactive')",
-			wantStmtCount: 2,
+			wantStmtCount: 4, // 2 ADD VALUE + COMMIT/BEGIN
 			wantContains:  []string{"ALTER TYPE", "ADD VALUE", "'pending'", "'suspended'"},
 		},
 		{
@@ -178,7 +178,7 @@ func TestCompareEnumTypes(t *testing.T) {
 			name:          "enum values added and removed",
 			localType:     "CREATE TYPE status AS ENUM ('active', 'pending')",
 			remoteType:    "CREATE TYPE status AS ENUM ('active', 'inactive')",
-			wantStmtCount: 2, // 1 DROP VALUE + 1 ADD VALUE
+			wantStmtCount: 4, // 1 DROP VALUE + 1 ADD VALUE + COMMIT/BEGIN
 			wantContains:  []string{"DROP VALUE", "'inactive'", "ADD VALUE", "'pending'"},
 		},
 	}
