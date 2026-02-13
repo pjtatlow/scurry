@@ -678,6 +678,106 @@ func TestForeignKeyConstraintAndIndexOnSameTableNeedTransactionBoundary(t *testi
 	}
 }
 
+// TestDropAndRecreateColumnNeedsTransactionBoundary reproduces the CockroachDB error:
+// "pq: column "available" being dropped, try again later"
+// This occurs when a column changes from a regular column to a computed column (or vice versa),
+// which requires dropping and re-creating the column. CockroachDB drops columns asynchronously,
+// so the ADD COLUMN with the same name fails if it runs in the same transaction.
+func TestDropAndRecreateColumnNeedsTransactionBoundary(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteTables []string
+		localTables  []string
+		wantOrder    []string
+	}{
+		{
+			name: "regular column to computed column needs COMMIT/BEGIN boundary",
+			remoteTables: []string{
+				`CREATE TABLE public.location_inventory (
+					id INT8 NOT NULL,
+					product_id INT8 NOT NULL,
+					quantity INT8 NOT NULL DEFAULT 0,
+					committed INT8 NOT NULL DEFAULT 0,
+					reserved INT8 NOT NULL DEFAULT 0,
+					available INT8 NOT NULL DEFAULT 0,
+					CONSTRAINT location_inventory_pkey PRIMARY KEY (id ASC)
+				)`,
+			},
+			localTables: []string{
+				`CREATE TABLE public.location_inventory (
+					id INT8 NOT NULL,
+					product_id INT8 NOT NULL,
+					quantity INT8 NOT NULL DEFAULT 0,
+					committed INT8 NOT NULL DEFAULT 0,
+					reserved INT8 NOT NULL DEFAULT 0,
+					available INT8 NOT NULL AS (quantity - committed - reserved) STORED,
+					CONSTRAINT location_inventory_pkey PRIMARY KEY (id ASC)
+				)`,
+			},
+			wantOrder: []string{"DROP COLUMN", "COMMIT", "BEGIN", "ADD COLUMN"},
+		},
+		{
+			name: "computed column expression changed needs COMMIT/BEGIN boundary",
+			remoteTables: []string{
+				`CREATE TABLE public.location_inventory (
+					id INT8 NOT NULL,
+					quantity INT8 NOT NULL DEFAULT 0,
+					committed INT8 NOT NULL DEFAULT 0,
+					reserved INT8 NOT NULL DEFAULT 0,
+					buildable INT8 NOT NULL DEFAULT 0,
+					total_available INT8 NOT NULL AS (quantity - committed) STORED,
+					CONSTRAINT location_inventory_pkey PRIMARY KEY (id ASC)
+				)`,
+			},
+			localTables: []string{
+				`CREATE TABLE public.location_inventory (
+					id INT8 NOT NULL,
+					quantity INT8 NOT NULL DEFAULT 0,
+					committed INT8 NOT NULL DEFAULT 0,
+					reserved INT8 NOT NULL DEFAULT 0,
+					buildable INT8 NOT NULL DEFAULT 0,
+					total_available INT8 NOT NULL AS (quantity + buildable - committed - reserved) STORED,
+					CONSTRAINT location_inventory_pkey PRIMARY KEY (id ASC)
+				)`,
+			},
+			wantOrder: []string{"DROP COLUMN", "COMMIT", "BEGIN", "ADD COLUMN"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localSchema := createSchemaWithTypesAndTables(nil, tt.localTables)
+			remoteSchema := createSchemaWithTypesAndTables(nil, tt.remoteTables)
+
+			diffResult := Compare(localSchema, remoteSchema)
+
+			if !diffResult.HasChanges() {
+				t.Fatal("expected changes but got none")
+			}
+
+			migrations, _, err := diffResult.GenerateMigrations(false)
+			if err != nil {
+				t.Fatalf("GenerateMigrations() error: %v", err)
+			}
+
+			allDDL := strings.Join(migrations, "\n")
+
+			// Verify that wantOrder substrings appear in the correct order
+			lastIndex := -1
+			for _, want := range tt.wantOrder {
+				index := strings.Index(allDDL[lastIndex+1:], want)
+				if index == -1 {
+					t.Errorf("expected %q to appear in migration output after position %d.\nGot:\n%s", want, lastIndex, allDDL)
+					break
+				}
+				// Adjust index to be relative to the full string
+				index = lastIndex + 1 + index
+				lastIndex = index
+			}
+		})
+	}
+}
+
 func TestComparisonResult_Summary(t *testing.T) {
 	tests := []struct {
 		name         string
