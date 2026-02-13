@@ -56,6 +56,17 @@ func (v *exprVisitor) visitNode(expr tree.Expr) {
 	case *tree.AllColumnsSelector:
 	case *tree.AndExpr:
 	case *tree.AnnotateTypeExpr:
+		{
+			if name, ok := getResolvableTypeReferenceDepName(expr.Type); ok {
+				v.deps.Add(name)
+				// When a string literal is annotated with a user-defined type (e.g. 'suspended':::public.status),
+				// this is an enum value reference. Add a dependency on the specific enum value so that
+				// ALTER TYPE ADD VALUE runs (and commits) before this expression is evaluated.
+				if strVal, ok := expr.Expr.(*tree.StrVal); ok {
+					v.deps.Add(name + "." + strVal.RawString())
+				}
+			}
+		}
 	case *tree.Array:
 	case *tree.ArrayFlatten:
 	case *tree.BinaryExpr:

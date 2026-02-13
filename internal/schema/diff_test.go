@@ -793,7 +793,7 @@ func TestAlterTypeAddValueAndCheckConstraintNeedTransactionBoundary(t *testing.T
 		wantOrder    []string
 	}{
 		{
-			name:        "new enum value and check constraint referencing it need COMMIT/BEGIN boundary",
+			name:        "cast syntax (::) - new enum value and check constraint",
 			remoteTypes: []string{"CREATE TYPE status AS ENUM ('active', 'inactive')"},
 			remoteTables: []string{
 				"CREATE TABLE users (id INT8 NOT NULL, status status NOT NULL, CONSTRAINT users_pkey PRIMARY KEY (id ASC))",
@@ -805,6 +805,24 @@ func TestAlterTypeAddValueAndCheckConstraintNeedTransactionBoundary(t *testing.T
 					status status NOT NULL,
 					CONSTRAINT users_pkey PRIMARY KEY (id ASC),
 					CONSTRAINT check_status CHECK (status != 'suspended'::public.status)
+				)`,
+			},
+			wantOrder: []string{"ADD VALUE", "COMMIT", "BEGIN", "CHECK"},
+		},
+		{
+			name:        "type annotation syntax (:::) - new enum value and check constraint",
+			remoteTypes: []string{"CREATE TYPE inventory_item_kind AS ENUM ('PRODUCT', 'RETURN')"},
+			remoteTables: []string{
+				"CREATE TABLE inventory_item (id INT8 NOT NULL, kind inventory_item_kind NOT NULL, return_id INT8 NULL, CONSTRAINT inventory_item_pkey PRIMARY KEY (id ASC))",
+			},
+			localTypes: []string{"CREATE TYPE inventory_item_kind AS ENUM ('PRODUCT', 'RETURN', 'UNDECLARED')"},
+			localTables: []string{
+				`CREATE TABLE inventory_item (
+					id INT8 NOT NULL,
+					kind inventory_item_kind NOT NULL,
+					return_id INT8 NULL,
+					CONSTRAINT inventory_item_pkey PRIMARY KEY (id ASC),
+					CONSTRAINT chk_inventory_item_kind_undeclared CHECK ((kind != 'UNDECLARED':::public.inventory_item_kind) OR (return_id IS NOT NULL))
 				)`,
 			},
 			wantOrder: []string{"ADD VALUE", "COMMIT", "BEGIN", "CHECK"},
