@@ -13,17 +13,19 @@ go_sdk.download(version = "1.26.0")
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 
+go_deps_dev = use_extension("@gazelle//:extensions.bzl", "go_deps", dev_dependency = True)
+
 # grpc-gateway v1 ships its own BUILD files using the old go_default_library
 # naming convention. Force gazelle to regenerate them with modern naming so
 # that transitive consumers (like cockroachdb-parser) can resolve targets.
-go_deps.gazelle_override(
+go_deps_dev.gazelle_override(
     build_file_generation = "clean",
     directives = [
         "gazelle:proto disable",
     ],
     path = "github.com/grpc-ecosystem/grpc-gateway",
 )
-go_deps.gazelle_override(
+go_deps_dev.gazelle_override(
     build_file_generation = "clean",
     directives = [
         "gazelle:proto disable",
@@ -33,7 +35,7 @@ go_deps.gazelle_override(
 
 # cockroachdb-parser ships pre-generated .pb.go files but its BUILD files
 # exclude them from go_library targets. Regenerate to include all Go sources.
-go_deps.gazelle_override(
+go_deps_dev.gazelle_override(
     build_file_generation = "clean",
     directives = [
         "gazelle:proto disable",
@@ -43,7 +45,7 @@ go_deps.gazelle_override(
 
 # genproto ships proto-generated Go files but gazelle doesn't generate BUILD
 # files for all subdirectories by default. Regenerate with proto disabled.
-go_deps.gazelle_override(
+go_deps_dev.gazelle_override(
     build_file_generation = "clean",
     directives = [
         "gazelle:proto disable",
@@ -54,7 +56,7 @@ go_deps.gazelle_override(
 # gosigar has platform-specific sources guarded by build constraints.
 # Regenerate BUILD files so gazelle emits proper select() statements
 # for cross-compilation.
-go_deps.gazelle_override(
+go_deps_dev.gazelle_override(
     build_file_generation = "clean",
     path = "github.com/elastic/gosigar",
 )
