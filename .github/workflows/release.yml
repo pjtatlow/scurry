@@ -39,8 +39,14 @@ jobs:
 
       - name: Build
         run: |
+          PLATFORM_FLAGS=""
+          # Only use --platforms for cross-compilation (non-darwin builds from ubuntu).
+          # Darwin builds run natively on macOS runners and need CGO (gosigar dep).
+          if [ "${{ matrix.goos }}" != "darwin" ]; then
+            PLATFORM_FLAGS="--platforms=@rules_go//go/toolchain:${{ matrix.goos }}_${{ matrix.goarch }}"
+          fi
           bazel build //:scurry \
-            --platforms=@rules_go//go/toolchain:${{ matrix.goos }}_${{ matrix.goarch }} \
+            $PLATFORM_FLAGS \
             --stamp \
             --workspace_status_command="echo STABLE_VERSION ${{ github.event.release.tag_name }}"
 
