@@ -37,23 +37,21 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
       - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '0' }}
+        run: |
+          bazel build //:scurry \
+            --platforms=@rules_go//go/toolchain:${{ matrix.goos }}_${{ matrix.goarch }} \
+            --stamp \
+            --workspace_status_command="echo STABLE_VERSION ${{ github.event.release.tag_name }}"
+
+      - name: Package
         run: |
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
           fi
-          go build -v -ldflags="-s -w -X github.com/pjtatlow/scurry/cmd.Version=${{ github.event.release.tag_name }}" -o "scurry${EXT}" .
+
+          cp "bazel-bin/scurry_/scurry${EXT}" "scurry${EXT}"
 
           # Determine sha256 command based on runner OS
           if [ "${{ runner.os }}" = "macOS" ]; then

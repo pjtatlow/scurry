@@ -9,6 +9,7 @@ go_binary(
     name = "scurry",
     embed = [":scurry_lib"],
     visibility = ["//visibility:public"],
+    x_defs = {"github.com/pjtatlow/scurry/cmd.Version": "{STABLE_VERSION}"},
 )
 
 go_library(
