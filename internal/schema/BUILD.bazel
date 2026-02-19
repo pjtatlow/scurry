@@ -1,0 +1,57 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "schema",
+    srcs = [
+        "dependencies.go",
+        "diff.go",
+        "expressions.go",
+        "format.go",
+        "migrations.go",
+        "names.go",
+        "order.go",
+        "providers.go",
+        "routines.go",
+        "schema.go",
+        "sequences.go",
+        "tables.go",
+        "types.go",
+        "views.go",
+    ],
+    importpath = "github.com/pjtatlow/scurry/internal/schema",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/db",
+        "//internal/set",
+        "//internal/ui",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/types",
+        "@com_github_spf13_afero//:afero",
+    ],
+)
+
+go_test(
+    name = "schema_test",
+    srcs = [
+        "computed_column_fix_test.go",
+        "diff_test.go",
+        "expressions_test.go",
+        "order_test.go",
+        "schema_test.go",
+        "sequences_test.go",
+        "tables_test.go",
+        "types_test.go",
+        "views_test.go",
+    ],
+    embed = [":schema"],
+    deps = [
+        "//internal/db",
+        "//internal/set",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_spf13_afero//:afero",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

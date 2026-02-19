@@ -13,8 +13,9 @@ import (
 
 // Client wraps the database connection
 type Client struct {
-	db  *sql.DB
-	url string
+	db       *sql.DB
+	url      string
+	isShadow bool
 }
 
 // Connect establishes a connection to the CockroachDB database

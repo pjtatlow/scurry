@@ -27,5 +27,12 @@ go.work
 .DS_Store
 Thumbs.db
 
+# Bazel
+bazel-bin
+bazel-out
+bazel-scurry
+bazel-testlogs
+MODULE.bazel.lock
+
 # Migration files (optional - remove this if you want to commit migrations)
 examples/

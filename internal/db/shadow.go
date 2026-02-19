@@ -131,6 +131,12 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to test server: %w", err)
 	}
+	client.isShadow = true
+
+	// Shadow databases are ephemeral and don't benefit from schema_locked.
+	// Disable it so tables can be freely modified without unlock overhead.
+	_, _ = client.db.ExecContext(ctx, "SET create_table_with_schema_locked = false")
+
 	return client, nil
 }
 

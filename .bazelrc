@@ -1,0 +1,7 @@
+# Bzlmod is enabled by default in Bazel 7+
+common --enable_bzlmod
+
+build --verbose_failures
+build --repo_env=GOPROXY=https://proxy.golang.org,direct
+
+test --test_output=errors
