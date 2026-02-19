@@ -145,7 +145,7 @@ func (e *CompatibilityError) Error() string {
 	var sb strings.Builder
 	sb.WriteString("schema compatibility check failed:\n")
 	for _, issue := range e.Issues {
-		sb.WriteString(fmt.Sprintf("  [%s] %s\n", issue.Severity, issue.Description))
+		fmt.Fprintf(&sb, "  [%s] %s\n", issue.Severity, issue.Description)
 	}
 	return sb.String()
 }
