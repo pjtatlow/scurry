@@ -1,0 +1,321 @@
+package db
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"fmt"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/cockroachdb/cockroach-go/v2/crdb"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/util/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestChunkStatementsByTransaction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		statements   []string
+		maxChunkSize int
+		expected     [][]string
+	}{
+		{
+			name:         "no statements",
+			statements:   []string{},
+			maxChunkSize: 50,
+			expected:     nil,
+		},
+		{
+			name:         "single chunk",
+			statements:   []string{"CREATE TABLE a (id INT)", "CREATE TABLE b (id INT)"},
+			maxChunkSize: 50,
+			expected:     [][]string{{"CREATE TABLE a (id INT)", "CREATE TABLE b (id INT)"}},
+		},
+		{
+			name:         "split by COMMIT/BEGIN pair",
+			statements:   []string{"CREATE TABLE a (id INT)", "COMMIT", "BEGIN", "CREATE TABLE b (id INT)"},
+			maxChunkSize: 50,
+			expected:     [][]string{{"CREATE TABLE a (id INT)"}, {"CREATE TABLE b (id INT)"}},
+		},
+		{
+			name:         "non-transactional section via COMMIT without BEGIN",
+			statements:   []string{"CREATE TABLE a (id INT)", "COMMIT", "ALTER TABLE a ALTER COLUMN x TYPE INT", "BEGIN", "CREATE TABLE b (id INT)"},
+			maxChunkSize: 50,
+			expected:     [][]string{{"CREATE TABLE a (id INT)"}, nil, {"ALTER TABLE a ALTER COLUMN x TYPE INT"}, {"CREATE TABLE b (id INT)"}},
+		},
+		{
+			name:         "chunk size limit",
+			statements:   []string{"s1", "s2", "s3", "s4", "s5"},
+			maxChunkSize: 2,
+			expected:     [][]string{{"s1", "s2"}, {"s3", "s4"}, {"s5"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := chunkStatementsByTransaction(tt.statements, tt.maxChunkSize)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// getProdLikeClient creates a "production-like" connection to the test server
+// WITHOUT disabling schema_locked (simulating a real DB connection).
+func getProdLikeClient(t *testing.T, ctx context.Context) *Client {
+	t.Helper()
+
+	// Start the shared test server by getting a shadow DB, then close it
+	shadowClient, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	shadowClient.Close()
+
+	shadowServerMu.Lock()
+	serverURL := shadowServerURL.String()
+	shadowServerMu.Unlock()
+
+	dbName := fmt.Sprintf("_prod_test_%s", uuid.NewV4())
+	parsedURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+	parsedURL.Path = fmt.Sprintf("/%s", dbName)
+
+	client, err := Connect(ctx, parsedURL.String())
+	require.NoError(t, err)
+	t.Cleanup(func() { client.Close() })
+
+	// Skip if CRDB version doesn't support schema_locked
+	var schemaLockedDefault string
+	err = client.db.QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&schemaLockedDefault)
+	if err != nil {
+		t.Skipf("CRDB version does not support create_table_with_schema_locked: %v", err)
+	}
+
+	return client
+}
+
+// TestExecuteBulkDDLWithSchemaLocked verifies that ExecuteBulkDDL can modify
+// tables that have schema_locked = true (the CockroachDB v26+ default).
+// This simulates the production scenario where scurry connects to a real database
+// (not a shadow DB) and applies migrations.
+func TestExecuteBulkDDLWithSchemaLocked(t *testing.T) {
+	ctx := context.Background()
+	client := getProdLikeClient(t, ctx)
+
+	// Create a table (which gets schema_locked = true on CRDB v26+)
+	_, err := client.db.ExecContext(ctx, "CREATE TABLE test_locked (id INT PRIMARY KEY, name TEXT)")
+	require.NoError(t, err)
+
+	// Verify the table was created with schema_locked
+	var createStmt string
+	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE test_locked").Scan(new(string), &createStmt)
+	require.NoError(t, err)
+	require.Contains(t, createStmt, "schema_locked = true", "table should have schema_locked on CRDB v26+")
+
+	// Now try to ALTER the table via ExecuteBulkDDL (the production path)
+	err = client.ExecuteBulkDDL(ctx,
+		"ALTER TABLE test_locked ADD COLUMN email TEXT",
+		"CREATE INDEX idx_name ON test_locked (name)",
+	)
+	require.NoError(t, err, "ExecuteBulkDDL should succeed against schema_locked tables")
+
+	// Verify the alterations were applied
+	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE test_locked").Scan(new(string), &createStmt)
+	require.NoError(t, err)
+
+	assert.Contains(t, createStmt, "email")
+	assert.Contains(t, createStmt, "idx_name")
+}
+
+// TestAutocommitDDLWithTransactionBoundaries tests whether COMMIT/BEGIN
+// transaction boundaries in migrations work correctly when autocommit_before_ddl
+// is ON (the default for production connections). This is the scenario where
+// migrations are generated against a shadow DB and then executed on production.
+func TestAutocommitDDLWithTransactionBoundaries(t *testing.T) {
+	ctx := context.Background()
+	client := getProdLikeClient(t, ctx)
+
+	// Simulate a migration that has transaction boundaries (COMMIT/BEGIN pairs)
+	// like those generated by schema diff
+	err := client.ExecuteBulkDDL(ctx,
+		"CREATE TABLE users (id INT PRIMARY KEY, name TEXT)",
+		"CREATE TABLE posts (id INT PRIMARY KEY, user_id INT, title TEXT)",
+		"COMMIT",
+		"BEGIN",
+		"ALTER TABLE posts ADD CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users (id)",
+		"CREATE INDEX idx_posts_user ON posts (user_id)",
+	)
+	require.NoError(t, err, "ExecuteBulkDDL with transaction boundaries should succeed")
+
+	// Verify everything was created
+	var createStmt string
+	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE posts").Scan(new(string), &createStmt)
+	require.NoError(t, err)
+
+	assert.Contains(t, createStmt, "fk_user")
+	assert.Contains(t, createStmt, "idx_posts_user")
+}
+
+// TestAutocommitMultipleDDLInOneChunk tests what happens when multiple DDL
+// statements are joined and sent in one shot inside crdb.ExecuteTx with
+// autocommit_before_ddl ON. This is the core concern: does the auto-commit
+// break the explicit transaction wrapper?
+func TestAutocommitMultipleDDLInOneChunk(t *testing.T) {
+	ctx := context.Background()
+	client := getProdLikeClient(t, ctx)
+
+	// First create a table with schema_locked
+	_, err := client.db.ExecContext(ctx, "CREATE TABLE multi_ddl (id INT PRIMARY KEY, name TEXT)")
+	require.NoError(t, err)
+
+	// Now send multiple DDL statements as a single chunk (no COMMIT/BEGIN boundaries)
+	// This exercises the exact code path in ExecuteBulkDDL where statements are
+	// joined with ";" and executed inside crdb.ExecuteTx
+	err = crdb.ExecuteTx(ctx, client.db, &sql.TxOptions{}, func(tx *sql.Tx) error {
+		// NOT setting autocommit_before_ddl = false (simulating production)
+		stmts := []string{
+			"ALTER TABLE multi_ddl ADD COLUMN email TEXT",
+			"ALTER TABLE multi_ddl ADD COLUMN age INT",
+			"CREATE INDEX idx_multi_name ON multi_ddl (name)",
+		}
+		_, err := tx.ExecContext(ctx, strings.Join(stmts, ";"))
+		return err
+	})
+	require.NoError(t, err, "multiple DDL in one crdb.ExecuteTx with autocommit ON should work")
+
+	// Verify all changes applied
+	var createStmt string
+	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE multi_ddl").Scan(new(string), &createStmt)
+	require.NoError(t, err)
+
+	assert.Contains(t, createStmt, "email")
+	assert.Contains(t, createStmt, "age")
+	assert.Contains(t, createStmt, "idx_multi_name")
+}
+
+// TestExecuteMigrationWithSchemaLocked exercises the full ExecuteMigration path
+// (the production migration execution path) against a database with schema_locked
+// tables. This covers realistic migration SQL including COMMIT/BEGIN transaction
+// boundaries, ALTER TABLE, CREATE INDEX, and new table creation — all against
+// tables that have schema_locked = true.
+func TestExecuteMigrationWithSchemaLocked(t *testing.T) {
+	ctx := context.Background()
+	client := getProdLikeClient(t, ctx)
+
+	// Initialize migration history (like migration execute does)
+	err := client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	// Set up initial production state: tables with schema_locked = true
+	_, err = client.db.ExecContext(ctx, `
+		CREATE TABLE users (id INT PRIMARY KEY, name TEXT);
+		CREATE TABLE posts (id INT PRIMARY KEY, user_id INT, title TEXT);
+	`)
+	require.NoError(t, err)
+
+	// Verify tables have schema_locked
+	var createStmt string
+	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE users").Scan(new(string), &createStmt)
+	require.NoError(t, err)
+	require.Contains(t, createStmt, "schema_locked = true")
+
+	tests := []struct {
+		name         string
+		migrationSQL string
+		verify       func(t *testing.T)
+	}{
+		{
+			name: "add columns and index to existing locked table",
+			migrationSQL: "ALTER TABLE users ADD COLUMN email TEXT;\n" +
+				"CREATE INDEX idx_users_name ON users (name);\n",
+			verify: func(t *testing.T) {
+				var stmt string
+				err := client.db.QueryRowContext(ctx, "SHOW CREATE TABLE users").Scan(new(string), &stmt)
+				require.NoError(t, err)
+				assert.Contains(t, stmt, "email")
+				assert.Contains(t, stmt, "idx_users_name")
+			},
+		},
+		{
+			name: "migration with COMMIT/BEGIN transaction boundaries",
+			// This simulates what GenerateMigrations produces when adding a
+			// partial index on a new column (requires COMMIT/BEGIN boundary)
+			migrationSQL: "ALTER TABLE posts ADD COLUMN published BOOL DEFAULT false;\n" +
+				"COMMIT;\n" +
+				"BEGIN;\n" +
+				"CREATE INDEX idx_posts_published ON posts (title) WHERE published = true;\n",
+			verify: func(t *testing.T) {
+				var stmt string
+				err := client.db.QueryRowContext(ctx, "SHOW CREATE TABLE posts").Scan(new(string), &stmt)
+				require.NoError(t, err)
+				assert.Contains(t, stmt, "published")
+				assert.Contains(t, stmt, "idx_posts_published")
+			},
+		},
+		{
+			name: "migration with new table and FK referencing locked table",
+			migrationSQL: "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT, body TEXT, " +
+				"CONSTRAINT fk_post FOREIGN KEY (post_id) REFERENCES posts (id));\n" +
+				"CREATE INDEX idx_comments_post ON comments (post_id);\n",
+			verify: func(t *testing.T) {
+				var stmt string
+				err := client.db.QueryRowContext(ctx, "SHOW CREATE TABLE comments").Scan(new(string), &stmt)
+				require.NoError(t, err)
+				assert.Contains(t, stmt, "fk_post")
+				assert.Contains(t, stmt, "idx_comments_post")
+			},
+		},
+		{
+			name: "migration with non-transactional section (COMMIT without BEGIN)",
+			// Simulates column type change which requires on-disk rewrite
+			// outside a transaction
+			migrationSQL: "ALTER TABLE users ADD COLUMN age INT;\n" +
+				"COMMIT;\n" +
+				"ALTER TABLE users ALTER COLUMN age SET DATA TYPE INT2;\n" +
+				"BEGIN;\n" +
+				"ALTER TABLE users ADD COLUMN bio TEXT;\n",
+			verify: func(t *testing.T) {
+				var stmt string
+				err := client.db.QueryRowContext(ctx, "SHOW CREATE TABLE users").Scan(new(string), &stmt)
+				require.NoError(t, err)
+				assert.Contains(t, stmt, "age")
+				assert.Contains(t, stmt, "INT2")
+				assert.Contains(t, stmt, "bio")
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(tt.migrationSQL)))
+			migration := Migration{
+				Name:     fmt.Sprintf("%05d_test_%s", i, tt.name),
+				SQL:      tt.migrationSQL,
+				Checksum: checksum,
+			}
+
+			err := client.ExecuteMigration(ctx, migration)
+			require.NoError(t, err)
+
+			// Verify migration was recorded
+			applied, err := client.GetAppliedMigrations(ctx)
+			require.NoError(t, err)
+			found := false
+			for _, m := range applied {
+				if m.Name == migration.Name {
+					found = true
+					assert.Equal(t, checksum, m.Checksum)
+					break
+				}
+			}
+			require.True(t, found, "migration %s should be recorded in history", migration.Name)
+
+			// Run test-specific verification
+			tt.verify(t)
+		})
+	}
+}

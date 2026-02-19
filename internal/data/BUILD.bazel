@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "data",
+    srcs = [
+        "compat.go",
+        "dump.go",
+        "format.go",
+        "load.go",
+    ],
+    importpath = "github.com/pjtatlow/scurry/internal/data",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/db",
+        "//internal/schema",
+        "@com_github_cockroachdb_cockroach_go_v2//crdb",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_lib_pq//:pq",
+    ],
+)
+
+go_test(
+    name = "data_test",
+    srcs = [
+        "compat_test.go",
+        "dump_test.go",
+        "format_test.go",
+        "load_test.go",
+    ],
+    embed = [":data"],
+    deps = [
+        "//internal/db",
+        "//internal/schema",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)
