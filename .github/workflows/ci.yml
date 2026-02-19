@@ -15,22 +15,8 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-      - name: Upload results to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+        run: bazel test //...
 
   lint:
     name: Lint
@@ -60,14 +46,8 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache: true
-
       - name: Build
-        run: go build -v -o scurry .
+        run: bazel build //...
 
       - name: Verify binary
-        run: ./scurry --help
+        run: bazel run //:scurry -- --help
