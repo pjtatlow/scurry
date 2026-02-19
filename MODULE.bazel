@@ -8,10 +8,7 @@ bazel_dep(name = "gazelle", version = "0.47.0")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 
-# Use the Go toolchain installed on the host rather than downloading one.
-# To download a specific version instead, replace with:
-#   go_sdk.download(version = "1.23.0")
-go_sdk.host()
+go_sdk.download(version = "1.26.0")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
