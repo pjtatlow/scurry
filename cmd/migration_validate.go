@@ -61,6 +61,11 @@ func doMigrationValidate(ctx context.Context) error {
 		return err
 	}
 
+	cache := getCheckpointCache(ctx)
+	if cache != nil {
+		defer cache.Close()
+	}
+
 	// 1. Load all migration files in order
 	if flags.Verbose {
 		fmt.Println(ui.Subtle("→ Loading migrations..."))
@@ -80,7 +85,7 @@ func doMigrationValidate(ctx context.Context) error {
 		fmt.Println(ui.Subtle("→ Applying migrations to clean database..."))
 	}
 
-	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, flags.Verbose)
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, flags.Verbose, cache)
 	if err != nil {
 		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
@@ -106,7 +111,7 @@ func doMigrationValidate(ctx context.Context) error {
 
 		// Create checkpoint for the last migration if it doesn't exist
 		if !validateNoCheckpoint && len(migrations) > 0 {
-			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+			if err := ensureCheckpointForLastMigration(ctx, fs, migrations, resultSchema, flags.Verbose, cache); err != nil {
 				return fmt.Errorf("failed to create checkpoint: %w", err)
 			}
 		}
@@ -144,7 +149,7 @@ func doMigrationValidate(ctx context.Context) error {
 
 		// Create checkpoint for the last migration if it doesn't exist
 		if !validateNoCheckpoint && len(migrations) > 0 {
-			if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+			if err := ensureCheckpointForLastMigration(ctx, fs, migrations, resultSchema, flags.Verbose, cache); err != nil {
 				return fmt.Errorf("failed to create checkpoint: %w", err)
 			}
 		}
@@ -184,7 +189,7 @@ func doMigrationValidate(ctx context.Context) error {
 
 	// Create checkpoint for the last migration if it doesn't exist
 	if !validateNoCheckpoint && len(migrations) > 0 {
-		if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
+		if err := ensureCheckpointForLastMigration(ctx, fs, migrations, resultSchema, flags.Verbose, cache); err != nil {
 			return fmt.Errorf("failed to create checkpoint: %w", err)
 		}
 	}
@@ -252,10 +257,37 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 
 // applyMigrationsToCleanDatabase creates a clean shadow database and applies all migrations
 // It uses checkpoints to optimize validation when available
-func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration, showProgress bool) (*schema.Schema, error) {
+func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration, showProgress bool, cache *db.CheckpointCache) (*schema.Schema, error) {
 	fs := afero.NewOsFs()
 
-	// Try to find a valid checkpoint to skip some migrations
+	// Check remote cache for the final migrations hash first
+	finalHash := computeMigrationsHash(migrations)
+	cachedCheckpoint := lookupFromCache(ctx, cache, finalHash)
+	if cachedCheckpoint != nil {
+		if showProgress {
+			fmt.Println(ui.Subtle("  Using cached checkpoint for final migrations hash (skipping all migrations)"))
+		}
+
+		checkpointStatements, parseErr := schema.ParseSQL(cachedCheckpoint.SchemaContent)
+		if parseErr == nil {
+			var stmtStrings []string
+			for _, stmt := range checkpointStatements {
+				stmtStrings = append(stmtStrings, stmt.String())
+			}
+
+			client, err := db.GetShadowDB(ctx, stmtStrings...)
+			if err != nil {
+				return nil, err
+			}
+			defer client.Close()
+			return schema.LoadFromDatabase(ctx, client)
+		}
+		if showProgress {
+			fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to parse cached checkpoint, falling back: %v", parseErr)))
+		}
+	}
+
+	// Try to find a valid local checkpoint to skip some migrations
 	checkpoint, checkpointIdx, err := findLatestValidCheckpoint(fs, migrations)
 	if err != nil && showProgress {
 		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: error finding checkpoint: %v", err)))
@@ -308,7 +340,36 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 	}
 	defer client.Close()
 
+	// Check remote cache at intervals between local checkpoint and end
+	if cache != nil && startIndex < len(migrations)-1 {
+		for i := len(migrations) - 1; i > startIndex; i -= checkpointCacheInterval {
+			intermediateHash := computeMigrationsHash(migrations[:i+1])
+			cached := lookupFromCache(ctx, cache, intermediateHash)
+			if cached != nil {
+				if showProgress {
+					fmt.Println(ui.Subtle(fmt.Sprintf("  Found cached checkpoint at migration %d/%d (skipping ahead)", i+1, len(migrations))))
+				}
+				checkpointStatements, parseErr := schema.ParseSQL(cached.SchemaContent)
+				if parseErr == nil {
+					var stmtStrings []string
+					for _, stmt := range checkpointStatements {
+						stmtStrings = append(stmtStrings, stmt.String())
+					}
+					// Close the old client and create a new one seeded from cache
+					client.Close()
+					client, err = db.GetShadowDB(ctx, stmtStrings...)
+					if err != nil {
+						return nil, err
+					}
+					startIndex = i + 1
+					break
+				}
+			}
+		}
+	}
+
 	// Apply remaining migrations
+	migrationsSinceLastCache := 0
 	for i := startIndex; i < len(migrations); i++ {
 		mig := migrations[i]
 		if showProgress {
@@ -326,6 +387,18 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 		if showProgress {
 			fmt.Println(ui.Success(fmt.Sprintf("    ✓ Completed in %v", duration.Round(time.Millisecond))))
 		}
+
+		migrationsSinceLastCache++
+
+		// Store intermediate checkpoints to remote cache at intervals
+		if cache != nil && migrationsSinceLastCache >= checkpointCacheInterval && i < len(migrations)-1 {
+			intermediateSchema, loadErr := schema.LoadFromDatabase(ctx, client)
+			if loadErr == nil {
+				intermediateHash := computeMigrationsHash(migrations[:i+1])
+				storeToCacheIfAvailable(ctx, cache, intermediateHash, intermediateSchema)
+			}
+			migrationsSinceLastCache = 0
+		}
 	}
 
 	// Get the schema from the database
@@ -333,7 +406,7 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 }
 
 // ensureCheckpointForLastMigration creates a checkpoint for the last migration if one doesn't exist
-func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resultSchema *schema.Schema, showProgress bool) error {
+func ensureCheckpointForLastMigration(ctx context.Context, fs afero.Fs, migrations []migration, resultSchema *schema.Schema, showProgress bool, cache *db.CheckpointCache) error {
 	if len(migrations) == 0 {
 		return nil
 	}
@@ -353,7 +426,8 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resul
 		expectedHash := computeMigrationsHash(migrations)
 		if checkpoint.Header.MigrationsHash == expectedHash {
 			if err := validateCheckpoint(checkpoint); err == nil {
-				// Checkpoint is valid, nothing to do
+				// Checkpoint is valid, nothing to do — but also store to remote cache
+				storeToCacheIfAvailable(ctx, cache, expectedHash, resultSchema)
 				return nil
 			}
 		}
@@ -372,6 +446,10 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resul
 	if err := createCheckpointForMigration(fs, migrations, resultSchema, migrationDir); err != nil {
 		return err
 	}
+
+	// Also store to remote cache
+	migrationsHash := computeMigrationsHash(migrations)
+	storeToCacheIfAvailable(ctx, cache, migrationsHash, resultSchema)
 
 	if showProgress {
 		fmt.Println(ui.Success("  ✓ Checkpoint created"))
