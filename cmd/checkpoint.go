@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	checkpointFileName     = "checkpoint.sql"
-	checkpointHeaderPrefix = "-- scurry:migrations="
+	checkpointFileName        = "checkpoint.sql"
+	checkpointHeaderPrefix    = "-- scurry:migrations="
+	checkpointCacheInterval   = 50
 )
 
 // CheckpointHeader holds the parsed header information from a checkpoint file
@@ -225,6 +227,86 @@ func findLatestValidCheckpoint(fs afero.Fs, allMigrations []migration) (*Checkpo
 	return nil, -1, nil
 }
 
+// getCheckpointCache creates a CheckpointCache from the SCHEMA_CACHE_URL env var.
+// On any error, prints a warning and returns nil. Returns nil if the env var is empty.
+func getCheckpointCache(ctx context.Context) *db.CheckpointCache {
+	cache, err := db.NewCheckpointCache(ctx, flags.SchemaCacheUrl)
+	if err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to connect to checkpoint cache: %v", err)))
+		return nil
+	}
+	if cache == nil {
+		return nil
+	}
+
+	if err := cache.InitTable(ctx); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to initialize checkpoint cache table: %v", err)))
+		cache.Close()
+		return nil
+	}
+
+	return cache
+}
+
+// storeToCacheIfAvailable generates schema SQL and stores it in the remote cache.
+// Logs warnings on error, never fails.
+func storeToCacheIfAvailable(ctx context.Context, cache *db.CheckpointCache, migrationsHash string, sch *schema.Schema) {
+	if cache == nil {
+		return
+	}
+
+	content, err := generateCheckpointContent(sch, migrationsHash)
+	if err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to generate checkpoint content for cache: %v", err)))
+		return
+	}
+
+	// Extract just the schema SQL (after the header line)
+	lines := strings.SplitN(content, "\n", 2)
+	schemaSQL := ""
+	if len(lines) > 1 {
+		schemaSQL = lines[1]
+	}
+
+	if err := cache.Put(ctx, migrationsHash, schemaSQL); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to store checkpoint in cache: %v", err)))
+	}
+}
+
+// lookupFromCache retrieves a cached checkpoint from the remote cache.
+// Returns nil on miss or error.
+func lookupFromCache(ctx context.Context, cache *db.CheckpointCache, migrationsHash string) *Checkpoint {
+	if cache == nil {
+		return nil
+	}
+
+	schemaSQL, found, err := cache.Get(ctx, migrationsHash)
+	if err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: failed to lookup checkpoint in cache: %v", err)))
+		return nil
+	}
+	if !found {
+		return nil
+	}
+
+	// Validate by parsing the SQL
+	_, parseErr := schema.ParseSQL(schemaSQL)
+	if parseErr != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("  Warning: cached checkpoint has invalid SQL: %v", parseErr)))
+		return nil
+	}
+
+	checkpointHash := computeContentHash(schemaSQL)
+
+	return &Checkpoint{
+		Header: CheckpointHeader{
+			MigrationsHash: migrationsHash,
+			CheckpointHash: checkpointHash,
+		},
+		SchemaContent: schemaSQL,
+	}
+}
+
 // runCheckpointRegen regenerates all checkpoint.sql files
 func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
@@ -244,6 +326,11 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 	if len(migrations) == 0 {
 		fmt.Println(ui.Info("No migrations found"))
 		return nil
+	}
+
+	cache := getCheckpointCache(ctx)
+	if cache != nil {
+		defer cache.Close()
 	}
 
 	fmt.Println(ui.Header(fmt.Sprintf("Regenerating checkpoints for %d migrations...", len(migrations))))
@@ -281,6 +368,10 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create checkpoint for %s: %w", mig.name, err)
 		}
+
+		// Also store to remote cache
+		migrationsHash := computeMigrationsHash(migrationsUpTo)
+		storeToCacheIfAvailable(ctx, cache, migrationsHash, currentSchema)
 
 		duration := time.Since(start)
 		fmt.Println(ui.Success(fmt.Sprintf("  Checkpoint created in %v", duration.Round(time.Millisecond))))

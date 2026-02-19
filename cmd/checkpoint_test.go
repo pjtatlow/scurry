@@ -430,7 +430,7 @@ func TestCreateCheckpointForMigration(t *testing.T) {
 	}
 
 	// Apply migration to get schema
-	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, false)
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, false, nil)
 	require.NoError(t, err)
 
 	// Create checkpoint
@@ -480,7 +480,7 @@ func TestRoundTripCheckpoint(t *testing.T) {
 	}
 
 	// Apply migrations to get schema after second migration
-	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, false)
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, migrations, false, nil)
 	require.NoError(t, err)
 
 	// Create checkpoint for second migration

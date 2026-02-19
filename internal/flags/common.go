@@ -12,7 +12,12 @@ var (
 	MigrationDir  string
 	DefinitionDir string
 	DbUrl         string
+	SchemaCacheUrl string
 )
+
+func init() {
+	SchemaCacheUrl = os.Getenv("SCHEMA_CACHE_URL")
+}
 
 func AddVerbose(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVarP(&Verbose, "verbose", "v", false, "Enable verbose output")
