@@ -1,0 +1,88 @@
+name: Setup Scurry
+description: Install the scurry CLI from GitHub releases
+
+inputs:
+  version:
+    description: Version to install (e.g., v0.1.31-alpha). Defaults to latest.
+    default: latest
+
+outputs:
+  version:
+    description: The installed version of scurry
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install scurry
+      id: install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        # Resolve version
+        VERSION="${INPUT_VERSION}"
+        if [ "${VERSION}" = "latest" ]; then
+          VERSION=$(gh release list --repo pjtatlow/scurry --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Resolved latest version: ${VERSION}"
+        fi
+
+        # Detect platform
+        case "${RUNNER_OS}" in
+          Linux)  OS="linux" ;;
+          macOS)  OS="darwin" ;;
+          Windows) OS="windows" ;;
+          *) echo "::error::Unsupported OS: ${RUNNER_OS}"; exit 1 ;;
+        esac
+
+        case "${RUNNER_ARCH}" in
+          X64)   ARCH="amd64" ;;
+          ARM64) ARCH="arm64" ;;
+          *) echo "::error::Unsupported architecture: ${RUNNER_ARCH}"; exit 1 ;;
+        esac
+
+        # Determine archive extension
+        if [ "${OS}" = "windows" ]; then
+          EXT="zip"
+        else
+          EXT="tar.gz"
+        fi
+
+        ARCHIVE="scurry-${OS}-${ARCH}.${EXT}"
+        CHECKSUM="${ARCHIVE}.sha256"
+
+        # Download archive and checksum
+        TMPDIR=$(mktemp -d)
+        gh release download "${VERSION}" \
+          --repo pjtatlow/scurry \
+          --pattern "${ARCHIVE}" \
+          --pattern "${CHECKSUM}" \
+          --dir "${TMPDIR}"
+
+        # Verify checksum
+        cd "${TMPDIR}"
+        sha256sum --check "${CHECKSUM}"
+
+        # Extract
+        INSTALL_DIR="${RUNNER_TEMP}/scurry"
+        mkdir -p "${INSTALL_DIR}"
+        if [ "${EXT}" = "zip" ]; then
+          unzip "${ARCHIVE}" -d "${INSTALL_DIR}"
+        else
+          tar xzf "${ARCHIVE}" -C "${INSTALL_DIR}"
+        fi
+
+        # Add to PATH
+        echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
+
+        # Clean up
+        rm -rf "${TMPDIR}"
+
+        # Verify installation
+        export PATH="${INSTALL_DIR}:${PATH}"
+        scurry version
+
+        echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"

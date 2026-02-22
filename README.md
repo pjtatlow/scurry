@@ -27,3 +27,40 @@ The issue with the second is that applying SQL migrations in CockroachDB [can be
 ## How do I use it?
 
 Guides coming soon...
+
+## GitHub Actions
+
+Scurry provides reusable GitHub Actions for CI/CD integration.
+
+### Install scurry
+
+Use the `setup` action to install the scurry CLI:
+
+```yaml
+- uses: pjtatlow/scurry/actions/setup@v1
+- run: scurry migration execute --db-url "$DB_URL" --force
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `version` | `latest` | Version to install (e.g., `v0.1.31-alpha`) |
+
+### Start a test database
+
+Use the `testdb` action to spin up a CockroachDB instance with your schema loaded:
+
+```yaml
+- uses: pjtatlow/scurry/actions/testdb@v1
+  id: testdb
+  with:
+    definitions: ./schema
+- run: go test ./...
+  env:
+    DATABASE_URL: ${{ steps.testdb.outputs.url }}
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `definitions` | `./definitions` | Path to schema definitions directory |
+| `scurry-version` | `latest` | Scurry version to install |
+| `crdb-version` | _(empty)_ | CockroachDB version (e.g., `v24.3.0`) |

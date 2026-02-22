@@ -1,0 +1,143 @@
+name: Scurry Test Database
+description: Start a CockroachDB test instance with your schema loaded
+
+inputs:
+  definitions:
+    description: Path to the schema definitions directory
+    default: ./definitions
+  scurry-version:
+    description: Scurry version to install (e.g., v0.1.31-alpha). Defaults to latest.
+    default: latest
+  crdb-version:
+    description: CockroachDB version (e.g., v24.3.0). Leave empty for scurry's default.
+    default: ""
+
+outputs:
+  url:
+    description: CockroachDB connection URL
+    value: ${{ steps.testdb.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install scurry
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.scurry-version }}
+      run: |
+        set -euo pipefail
+
+        # Resolve version
+        VERSION="${INPUT_VERSION}"
+        if [ "${VERSION}" = "latest" ]; then
+          VERSION=$(gh release list --repo pjtatlow/scurry --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Resolved latest version: ${VERSION}"
+        fi
+
+        # Detect platform
+        case "${RUNNER_OS}" in
+          Linux)  OS="linux" ;;
+          macOS)  OS="darwin" ;;
+          Windows) OS="windows" ;;
+          *) echo "::error::Unsupported OS: ${RUNNER_OS}"; exit 1 ;;
+        esac
+
+        case "${RUNNER_ARCH}" in
+          X64)   ARCH="amd64" ;;
+          ARM64) ARCH="arm64" ;;
+          *) echo "::error::Unsupported architecture: ${RUNNER_ARCH}"; exit 1 ;;
+        esac
+
+        # Determine archive extension
+        if [ "${OS}" = "windows" ]; then
+          EXT="zip"
+        else
+          EXT="tar.gz"
+        fi
+
+        ARCHIVE="scurry-${OS}-${ARCH}.${EXT}"
+        CHECKSUM="${ARCHIVE}.sha256"
+
+        # Download archive and checksum
+        TMPDIR=$(mktemp -d)
+        gh release download "${VERSION}" \
+          --repo pjtatlow/scurry \
+          --pattern "${ARCHIVE}" \
+          --pattern "${CHECKSUM}" \
+          --dir "${TMPDIR}"
+
+        # Verify checksum
+        cd "${TMPDIR}"
+        sha256sum --check "${CHECKSUM}"
+
+        # Extract
+        INSTALL_DIR="${RUNNER_TEMP}/scurry"
+        mkdir -p "${INSTALL_DIR}"
+        if [ "${EXT}" = "zip" ]; then
+          unzip "${ARCHIVE}" -d "${INSTALL_DIR}"
+        else
+          tar xzf "${ARCHIVE}" -C "${INSTALL_DIR}"
+        fi
+
+        # Add to PATH
+        echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
+
+        # Clean up
+        rm -rf "${TMPDIR}"
+
+        # Verify installation
+        export PATH="${INSTALL_DIR}:${PATH}"
+        scurry version
+
+    - name: Start test database
+      id: testdb
+      shell: bash
+      env:
+        CRDB_VERSION: ${{ inputs.crdb-version }}
+      run: |
+        set -euo pipefail
+
+        DEFINITIONS="${{ inputs.definitions }}"
+        LOG_FILE="${RUNNER_TEMP}/scurry-testserver.log"
+        URL_FILE="${RUNNER_TEMP}/scurry-testserver-url"
+
+        # Start testserver in background
+        nohup scurry testserver \
+          --definitions "${DEFINITIONS}" \
+          --url-file "${URL_FILE}" \
+          > "${LOG_FILE}" 2>&1 &
+        SERVER_PID=$!
+        echo "Started scurry testserver (PID: ${SERVER_PID})"
+
+        # Poll for URL file (CockroachDB binary may need downloading on first run)
+        TIMEOUT=120
+        INTERVAL=2
+        ELAPSED=0
+
+        while [ ! -f "${URL_FILE}" ]; do
+          if [ ${ELAPSED} -ge ${TIMEOUT} ]; then
+            echo "::error::Timed out waiting for test database after ${TIMEOUT}s"
+            if kill -0 "${SERVER_PID}" 2>/dev/null; then
+              echo "Process is still running. Log output:"
+            else
+              echo "Process has exited. Log output:"
+            fi
+            cat "${LOG_FILE}" || true
+            exit 1
+          fi
+
+          if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "::error::scurry testserver exited unexpectedly"
+            cat "${LOG_FILE}" || true
+            exit 1
+          fi
+
+          sleep ${INTERVAL}
+          ELAPSED=$((ELAPSED + INTERVAL))
+        done
+
+        URL=$(cat "${URL_FILE}")
+        echo "::add-mask::${URL}"
+        echo "url=${URL}" >> "${GITHUB_OUTPUT}"
+        echo "Test database is ready"
