@@ -14,6 +14,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -247,13 +248,41 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		}
 	}
 
+	// Classify migration as sync or async
+	tableSizes, err := migrationpkg.LoadTableSizes(fs, flags.MigrationDir)
+	if err != nil {
+		return fmt.Errorf("failed to load table_sizes.yaml: %w", err)
+	}
+
+	classifyResult := migrationpkg.ClassifyDifferences(diffResult.Differences, tableSizes)
+
+	if classifyResult.Mode == migrationpkg.ModeAsync {
+		fmt.Println()
+		fmt.Println(ui.Warning("Migration classified as async:"))
+		for _, reason := range classifyResult.Reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+		fmt.Println()
+	}
+
+	// Build header with mode and dependency on previous migration
+	var header *migrationpkg.Header
+	header = &migrationpkg.Header{Mode: classifyResult.Mode}
+
+	// Find previous migration for depends_on
+	existingMigrations, err := loadMigrations(fs)
+	if err == nil && len(existingMigrations) > 0 {
+		lastMigration := existingMigrations[len(existingMigrations)-1]
+		header.DependsOn = []string{lastMigration.name}
+	}
+
 	// Create migration directory and file
 	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, _, err := createMigration(fs, name, statements)
+	migrationDirName, _, err := createMigration(fs, name, statements, header)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}

@@ -22,6 +22,7 @@ type Migration struct {
 	Name     string
 	SQL      string
 	Checksum string
+	Mode     string // "sync", "async", or "" (treated as sync)
 }
 
 // Migration status constants

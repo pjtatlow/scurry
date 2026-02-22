@@ -144,7 +144,7 @@ func doMigrationNew(ctx context.Context) error {
 	// Create migration directory and file
 	fmt.Println(ui.Subtle("→ Creating migration..."))
 
-	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings)
+	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}

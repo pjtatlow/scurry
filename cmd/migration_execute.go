@@ -14,12 +14,14 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
 var (
 	executeDryRun           bool
 	executeForce            bool
+	executeIncludeAsync     bool
 	executeStatementTimeout time.Duration
 )
 
@@ -52,6 +54,7 @@ func init() {
 
 	migrationExecuteCmd.Flags().BoolVar(&executeDryRun, "dry-run", false, "Show what would be executed without applying")
 	migrationExecuteCmd.Flags().BoolVar(&executeForce, "force", false, "Skip confirmation prompt")
+	migrationExecuteCmd.Flags().BoolVar(&executeIncludeAsync, "include-async", false, "Include async migrations in execution")
 	migrationExecuteCmd.Flags().DurationVar(&executeStatementTimeout, "statement-timeout", 0, "Set statement timeout (e.g., 30s, 5m, 1h)")
 }
 
@@ -129,9 +132,37 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Partition into sync and async migrations
+	var syncMigrations, asyncMigrations []db.Migration
+	for _, m := range unappliedMigrations {
+		if m.Mode == string(migrationpkg.ModeAsync) {
+			asyncMigrations = append(asyncMigrations, m)
+		} else {
+			syncMigrations = append(syncMigrations, m)
+		}
+	}
+
+	// Determine which migrations to execute
+	migrationsToExecute := unappliedMigrations
+	if !executeIncludeAsync && len(asyncMigrations) > 0 {
+		migrationsToExecute = syncMigrations
+
+		fmt.Printf("\n%s\n", ui.Warning(fmt.Sprintf("Skipping %d async migration(s):", len(asyncMigrations))))
+		for _, m := range asyncMigrations {
+			fmt.Printf("  - %s\n", m.Name)
+		}
+		fmt.Println(ui.Info("Use --include-async to execute all migrations"))
+	}
+
+	if len(migrationsToExecute) == 0 {
+		fmt.Println()
+		fmt.Println(ui.Success("No sync migrations to execute"))
+		return nil
+	}
+
 	// Display migrations to be executed
 	fmt.Printf("\n%s\n", ui.Header("Migrations to execute:"))
-	for i, migration := range unappliedMigrations {
+	for i, migration := range migrationsToExecute {
 		fmt.Printf("  %d. %s\n", i+1, migration.Name)
 	}
 	fmt.Println()
@@ -156,8 +187,8 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 	// Execute migrations one by one
 	fmt.Println()
-	for i, migration := range unappliedMigrations {
-		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(unappliedMigrations))
+	for i, migration := range migrationsToExecute {
+		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(migrationsToExecute))
 
 		err := dbClient.ExecuteMigrationWithTracking(ctx, migration)
 		if err != nil {
@@ -170,13 +201,13 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 			if i > 0 {
 				fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Successfully applied %d migration(s) before failure:", i)))
 				for j := range i {
-					fmt.Printf("  ✓ %s\n", unappliedMigrations[j].Name)
+					fmt.Printf("  ✓ %s\n", migrationsToExecute[j].Name)
 				}
 				fmt.Println()
 			}
 
 			fmt.Printf("%s\n", ui.Error(fmt.Sprintf("Failed migration: %s", migration.Name)))
-			fmt.Printf("%s\n", ui.Info(fmt.Sprintf("Remaining migrations not executed: %d", len(unappliedMigrations)-i-1)))
+			fmt.Printf("%s\n", ui.Info(fmt.Sprintf("Remaining migrations not executed: %d", len(migrationsToExecute)-i-1)))
 			fmt.Println()
 			fmt.Println(ui.Info("Run 'scurry migration recover' to resolve this failure"))
 
@@ -189,7 +220,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	// All migrations completed successfully
 	fmt.Println()
 	fmt.Println(ui.Success("All migrations executed successfully!"))
-	fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Applied %d migration(s)", len(unappliedMigrations))))
+	fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Applied %d migration(s)", len(migrationsToExecute))))
 
 	return nil
 }
@@ -247,20 +278,33 @@ func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
 		sql := string(content)
 		checksum := computeChecksum(sql)
 
+		// Parse header and determine mode
+		mode := string(migrationpkg.ModeSync)
+		header, _ := migrationpkg.ParseHeader(sql)
+		if header != nil {
+			mode = string(header.Mode)
+		}
+
+		// Strip header from SQL before execution
+		strippedSQL := migrationpkg.StripHeader(sql)
+
 		// Add the migration
 		allMigrations = append(allMigrations, db.Migration{
 			Name:     dir,
-			SQL:      sql,
+			SQL:      strippedSQL,
 			Checksum: checksum,
+			Mode:     mode,
 		})
 	}
 
 	return allMigrations, nil
 }
 
-// ComputeChecksum computes the SHA-256 checksum of a migration's SQL content
+// computeChecksum computes the SHA-256 checksum of a migration's SQL content.
+// Headers are stripped before hashing so that header-only edits don't change the checksum.
 func computeChecksum(sql string) string {
-	hash := sha256.Sum256([]byte(sql))
+	stripped := migrationpkg.StripHeader(sql)
+	hash := sha256.Sum256([]byte(stripped))
 	return fmt.Sprintf("%x", hash)
 }
 

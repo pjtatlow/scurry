@@ -65,6 +65,60 @@ func TestComputeMigrationsHashDifferentContent(t *testing.T) {
 	assert.NotEqual(t, hash1, hash2, "different content should produce different hashes")
 }
 
+func TestComputeMigrationsHashStripsHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		sql1 string
+		sql2 string
+	}{
+		{
+			name: "header vs no header",
+			sql1: "CREATE TABLE users (id INT PRIMARY KEY);",
+			sql2: "-- scurry:mode=sync\nCREATE TABLE users (id INT PRIMARY KEY);",
+		},
+		{
+			name: "different headers same SQL",
+			sql1: "-- scurry:mode=sync\nCREATE TABLE users (id INT PRIMARY KEY);",
+			sql2: "-- scurry:mode=async,depends_on=foo\nCREATE TABLE users (id INT PRIMARY KEY);",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash1 := computeMigrationsHash([]migration{{name: "001", sql: tt.sql1}})
+			hash2 := computeMigrationsHash([]migration{{name: "001", sql: tt.sql2}})
+			assert.Equal(t, hash1, hash2, "header changes should not affect migrations hash")
+		})
+	}
+}
+
+func TestComputeChecksumStripsHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		sql1 string
+		sql2 string
+	}{
+		{
+			name: "header vs no header",
+			sql1: "ALTER TABLE users ADD COLUMN name TEXT;",
+			sql2: "-- scurry:mode=async\nALTER TABLE users ADD COLUMN name TEXT;",
+		},
+		{
+			name: "different headers same SQL",
+			sql1: "-- scurry:mode=sync\nALTER TABLE users ADD COLUMN name TEXT;",
+			sql2: "-- scurry:mode=async,depends_on=foo;bar\nALTER TABLE users ADD COLUMN name TEXT;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checksum1 := computeChecksum(tt.sql1)
+			checksum2 := computeChecksum(tt.sql2)
+			assert.Equal(t, checksum1, checksum2, "header changes should not affect checksum")
+		})
+	}
+}
+
 func TestComputeContentHash(t *testing.T) {
 	tests := []struct {
 		name     string

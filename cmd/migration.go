@@ -12,6 +12,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -107,7 +108,7 @@ func dumpProductionSchema(ctx context.Context, fs afero.Fs, sch *schema.Schema) 
 
 // Helper function to create migration directory and file
 // Returns the migration directory name and the content written to migration.sql
-func createMigration(fs afero.Fs, name string, statements []string) (string, string, error) {
+func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
 	// Generate timestamp prefix
 	timestamp := time.Now().Format("20060102150405")
 	migrationName := fmt.Sprintf("%s_%s", timestamp, name)
@@ -122,6 +123,9 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, str
 	// Write migration.sql
 	migrationFile := filepath.Join(migrationPath, "migration.sql")
 	content := strings.Join(statements, ";\n\n") + ";\n"
+	if header != nil {
+		content = migrationpkg.FormatHeader(header) + "\n" + content
+	}
 	err = afero.WriteFile(fs, migrationFile, []byte(content), 0644)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to write migration.sql: %w", err)

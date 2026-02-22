@@ -157,7 +157,7 @@ func TestCreateMigration(t *testing.T) {
 		"CREATE INDEX title_idx ON posts (title)",
 	}
 
-	migrationName, migrationContent, err := createMigration(fs, "add_posts_table", statements)
+	migrationName, migrationContent, err := createMigration(fs, "add_posts_table", statements, nil)
 	require.NoError(t, err)
 
 	// Verify migration name format (timestamp_name)
@@ -310,7 +310,7 @@ func TestMigrateGenIntegration(t *testing.T) {
 	assert.NotEmpty(t, statements)
 
 	// Create migration
-	migrationName, _, err := createMigration(fs, "add_users_table", statements)
+	migrationName, _, err := createMigration(fs, "add_users_table", statements, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, migrationName)
 

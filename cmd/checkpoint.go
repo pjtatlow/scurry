@@ -13,6 +13,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -49,10 +50,11 @@ func init() {
 
 // computeMigrationsHash computes SHA-256 of concatenated migration contents
 // migrations must be sorted by name (timestamp order)
+// Headers are stripped before hashing so that header-only edits don't change the hash.
 func computeMigrationsHash(migrations []migration) string {
 	var combined strings.Builder
 	for _, m := range migrations {
-		combined.WriteString(m.sql)
+		combined.WriteString(migrationpkg.StripHeader(m.sql))
 	}
 	hash := sha256.Sum256([]byte(combined.String()))
 	return fmt.Sprintf("%x", hash)
