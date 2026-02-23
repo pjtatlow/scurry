@@ -8,7 +8,9 @@ import (
 	"github.com/pjtatlow/scurry/internal/set"
 )
 
-func getDependencyNames(stmt tree.Statement) set.Set[string] {
+// GetDependencyNames returns the set of names that the given statement depends on.
+// When safe is true, unknown statement types return an empty set instead of panicking.
+func GetDependencyNames(stmt tree.Statement, safe bool) set.Set[string] {
 	switch stmt := stmt.(type) {
 	case *tree.CreateTable:
 		return getCreateTableDependencies(stmt)
@@ -42,7 +44,9 @@ func getDependencyNames(stmt tree.Statement) set.Set[string] {
 	case *tree.CreateSchema:
 	case *tree.DropSchema:
 	default:
-		panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
+		if !safe {
+			panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
+		}
 	}
 	return set.New[string]()
 }

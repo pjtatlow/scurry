@@ -265,15 +265,28 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		fmt.Println()
 	}
 
-	// Build header with mode and dependency on previous migration
-	var header *migrationpkg.Header
-	header = &migrationpkg.Header{Mode: classifyResult.Mode}
+	// Build header with mode and smart dependency detection
+	header := &migrationpkg.Header{Mode: classifyResult.Mode}
 
-	// Find previous migration for depends_on
+	// Parse new migration statements for dependency detection
+	var newStmts []tree.Statement
+	for _, s := range statements {
+		parsed, err := parser.Parse(s)
+		if err == nil {
+			for _, p := range parsed {
+				newStmts = append(newStmts, p.AST)
+			}
+		}
+	}
+
+	// Find dependencies based on object-level overlap
 	existingMigrations, err := loadMigrations(fs)
 	if err == nil && len(existingMigrations) > 0 {
-		lastMigration := existingMigrations[len(existingMigrations)-1]
-		header.DependsOn = []string{lastMigration.name}
+		migInfos := make([]migrationpkg.MigrationInfo, len(existingMigrations))
+		for i, m := range existingMigrations {
+			migInfos[i] = migrationpkg.MigrationInfo{Name: m.name, SQL: m.sql}
+		}
+		header.DependsOn = migrationpkg.FindDependencies(newStmts, migInfos)
 	}
 
 	// Create migration directory and file

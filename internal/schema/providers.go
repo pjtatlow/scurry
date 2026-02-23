@@ -8,7 +8,9 @@ import (
 	"github.com/pjtatlow/scurry/internal/set"
 )
 
-func getProvidedNames(stmt tree.Statement) set.Set[string] {
+// GetProvidedNames returns the set of names provided (created/defined) by the given statement.
+// When safe is true, unknown statement/command types return an empty set instead of panicking.
+func GetProvidedNames(stmt tree.Statement, safe bool) set.Set[string] {
 	names := set.New[string]()
 	switch s := stmt.(type) {
 	case *tree.CreateSchema:
@@ -106,7 +108,9 @@ func getProvidedNames(stmt tree.Statement) set.Set[string] {
 				case *tree.AlterTableResetStorageParams:
 
 				default:
-					panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
+					if !safe {
+						panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
+					}
 				}
 			}
 		}
@@ -142,7 +146,9 @@ func getProvidedNames(stmt tree.Statement) set.Set[string] {
 	case *tree.CommitTransaction:
 	case *tree.DropSchema:
 	default:
-		panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
+		if !safe {
+			panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
+		}
 	}
 	return names
 

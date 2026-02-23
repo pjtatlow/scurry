@@ -3,6 +3,12 @@ package migration
 import (
 	"fmt"
 	"strings"
+
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+
+	"github.com/pjtatlow/scurry/internal/schema"
+	"github.com/pjtatlow/scurry/internal/set"
 )
 
 // MigrationMode represents whether a migration is sync or async
@@ -93,4 +99,81 @@ func StripHeader(sql string) string {
 func PrependHeader(sql string, h *Header) string {
 	stripped := StripHeader(sql)
 	return FormatHeader(h) + "\n" + stripped
+}
+
+// MigrationInfo holds the name and SQL content of an existing migration.
+type MigrationInfo struct {
+	Name string
+	SQL  string
+}
+
+// FindDependencies detects which existing migrations share object-level overlaps
+// with the new migration statements, returning only the most recent migration(s)
+// that touch overlapping objects.
+func FindDependencies(newStatements []tree.Statement, existingMigrations []MigrationInfo) []string {
+	// Compute all names touched by the new migration (provides + dependencies),
+	// excluding schema-level names (e.g. "schema:public") which are too generic.
+	newNames := set.New[string]()
+	for _, stmt := range newStatements {
+		for name := range schema.GetProvidedNames(stmt, true).Values() {
+			if !strings.HasPrefix(name, "schema:") {
+				newNames.Add(name)
+			}
+		}
+		for name := range schema.GetDependencyNames(stmt, true).Values() {
+			if !strings.HasPrefix(name, "schema:") {
+				newNames.Add(name)
+			}
+		}
+	}
+
+	if newNames.Size() == 0 {
+		return nil
+	}
+
+	covered := set.New[string]()
+	var deps []string
+
+	// Iterate existing migrations in reverse chronological order (most recent first)
+	for i := len(existingMigrations) - 1; i >= 0; i-- {
+		mig := existingMigrations[i]
+
+		// Strip header before parsing
+		sql := StripHeader(mig.SQL)
+		parsed, err := parser.Parse(sql)
+		if err != nil {
+			continue
+		}
+
+		migNames := set.New[string]()
+		for _, stmt := range parsed {
+			for name := range schema.GetProvidedNames(stmt.AST, true).Values() {
+				if !strings.HasPrefix(name, "schema:") {
+					migNames.Add(name)
+				}
+			}
+			for name := range schema.GetDependencyNames(stmt.AST, true).Values() {
+				if !strings.HasPrefix(name, "schema:") {
+					migNames.Add(name)
+				}
+			}
+		}
+
+		overlap := newNames.Intersection(migNames)
+		// Only count names we haven't already covered
+		uncoveredOverlap := overlap.Difference(covered)
+		if uncoveredOverlap.Size() > 0 {
+			deps = append(deps, mig.Name)
+			for name := range uncoveredOverlap.Values() {
+				covered.Add(name)
+			}
+		}
+
+		// Once all names are covered, stop
+		if covered.Size() >= newNames.Size() {
+			break
+		}
+	}
+
+	return deps
 }
