@@ -3,20 +3,11 @@ package db
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
-	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/lib/pq"
 )
-
-// DesiredMigrationsTableSchema is embedded from schema/migrations_table.sql
-// This is the source of truth for what the _scurry_.migrations table should look like.
-//
-//go:embed schema/migrations_table.sql
-var DesiredMigrationsTableSchema string
 
 // Migration represents a migration file with its metadata
 type Migration struct {
@@ -35,6 +26,12 @@ const (
 	MigrationStatusRecovered = "recovered"
 )
 
+// Migration mode constants
+const (
+	MigrationModeSync  = "sync"
+	MigrationModeAsync = "async"
+)
+
 // AppliedMigration represents a migration that has been applied to the database
 type AppliedMigration struct {
 	Name            string
@@ -47,138 +44,6 @@ type AppliedMigration struct {
 	FailedStatement *string
 	ErrorMsg        *string
 	Async           bool
-}
-
-// InitMigrationHistory creates the _scurry_ schema and migrations table if they don't exist.
-// For existing databases with an old schema, it uses schema diffing to migrate to the current schema.
-func (c *Client) InitMigrationHistory(ctx context.Context) error {
-	// Create the schema first
-	_, err := c.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS _scurry_`)
-	if err != nil {
-		return fmt.Errorf("failed to create _scurry_ schema: %w", err)
-	}
-
-	// Get current CREATE TABLE statement from database (if table exists)
-	currentSchema, err := c.getMigrationsTableSchema(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get current migrations table schema: %w", err)
-	}
-
-	// If table doesn't exist, create it with the desired schema
-	if currentSchema == "" {
-		_, err = c.db.ExecContext(ctx, DesiredMigrationsTableSchema)
-		if err != nil {
-			return fmt.Errorf("failed to create migrations table: %w", err)
-		}
-		return nil
-	}
-
-	// Table exists - compare schemas and generate migration statements
-	alterStatements, err := generateMigrationsTableAlterStatements(currentSchema, DesiredMigrationsTableSchema)
-	if err != nil {
-		return fmt.Errorf("failed to generate schema migration: %w", err)
-	}
-
-	// Execute any necessary ALTER statements
-	for _, stmt := range alterStatements {
-		_, err = c.db.ExecContext(ctx, stmt)
-		if err != nil {
-			return fmt.Errorf("failed to migrate migrations table schema: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// MigrationsTableExists checks if the _scurry_.migrations table exists
-func (c *Client) MigrationsTableExists(ctx context.Context) (bool, error) {
-	schema, err := c.getMigrationsTableSchema(ctx)
-	if err != nil {
-		return false, err
-	}
-	return schema != "", nil
-}
-
-// getMigrationsTableSchema returns the current CREATE TABLE statement for the migrations table,
-// or empty string if the table doesn't exist.
-func (c *Client) getMigrationsTableSchema(ctx context.Context) (string, error) {
-	var createStatement string
-	err := c.db.QueryRowContext(ctx, `
-		SELECT create_statement
-		FROM crdb_internal.create_statements
-		WHERE descriptor_name = 'migrations'
-		AND schema_name = '_scurry_'
-	`).Scan(&createStatement)
-
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return createStatement, nil
-}
-
-// generateMigrationsTableAlterStatements compares current and desired schemas and returns
-// ALTER statements needed to migrate from current to desired.
-func generateMigrationsTableAlterStatements(currentSQL, desiredSQL string) ([]string, error) {
-	// Parse both schemas
-	currentStmts, err := parser.Parse(currentSQL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse current schema: %w", err)
-	}
-	desiredStmts, err := parser.Parse(desiredSQL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse desired schema: %w", err)
-	}
-
-	if len(currentStmts) != 1 || len(desiredStmts) != 1 {
-		return nil, fmt.Errorf("expected exactly one statement in each schema")
-	}
-
-	currentTable, ok := currentStmts[0].AST.(*tree.CreateTable)
-	if !ok {
-		return nil, fmt.Errorf("current schema is not a CREATE TABLE statement")
-	}
-	desiredTable, ok := desiredStmts[0].AST.(*tree.CreateTable)
-	if !ok {
-		return nil, fmt.Errorf("desired schema is not a CREATE TABLE statement")
-	}
-
-	// Build map of current columns
-	currentCols := make(map[string]*tree.ColumnTableDef)
-	for _, def := range currentTable.Defs {
-		if col, ok := def.(*tree.ColumnTableDef); ok {
-			currentCols[string(col.Name)] = col
-		}
-	}
-
-	// Build map of desired columns
-	desiredCols := make(map[string]*tree.ColumnTableDef)
-	for _, def := range desiredTable.Defs {
-		if col, ok := def.(*tree.ColumnTableDef); ok {
-			desiredCols[string(col.Name)] = col
-		}
-	}
-
-	var alterStatements []string
-
-	// Find columns to add (in desired but not in current)
-	for name, desiredCol := range desiredCols {
-		if _, exists := currentCols[name]; !exists {
-			// Generate ADD COLUMN statement
-			addCol := &tree.AlterTableAddColumn{
-				ColumnDef: desiredCol,
-			}
-			alter := &tree.AlterTable{
-				Table: desiredTable.Table.ToUnresolvedObjectName(),
-				Cmds:  tree.AlterTableCmds{addCol},
-			}
-			alterStatements = append(alterStatements, alter.String())
-		}
-	}
-
-	return alterStatements, nil
 }
 
 // GetAppliedMigrations returns all migrations that have been applied to the database
@@ -215,36 +80,6 @@ func (c *Client) RecordMigration(ctx context.Context, name, checksum string, asy
 	if err != nil {
 		return fmt.Errorf("failed to record migration %s: %w", name, err)
 	}
-	return nil
-}
-
-// MarkAllMigrationsComplete marks all provided migrations as succeeded.
-// This is used when the database schema is already in sync (e.g., after a fresh push
-// to an empty database or a legacy database without migration tracking).
-func (c *Client) MarkAllMigrationsComplete(ctx context.Context, migrations []Migration) error {
-	for _, migration := range migrations {
-		if err := c.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ExecuteMigration executes a single migration and records it in the history
-// This does NOT use a transaction - if it fails, it fails, and we report the error
-// Deprecated: Use ExecuteMigrationWithTracking instead for better failure tracking
-func (c *Client) ExecuteMigration(ctx context.Context, migration Migration) error {
-	// Execute the migration SQL
-	err := c.ExecuteBulkDDL(ctx, migration.SQL)
-	if err != nil {
-		return fmt.Errorf("failed to execute migration %s: %w", migration.Name, err)
-	}
-
-	// Record the migration in the history table
-	if err := c.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
-		return fmt.Errorf("migration %s succeeded but failed to record in history: %w", migration.Name, err)
-	}
-
 	return nil
 }
 
@@ -310,29 +145,49 @@ func (c *Client) FailMigration(ctx context.Context, name, failedStatement, error
 	return nil
 }
 
-// RecoverMigration marks a migration as recovered (manual intervention)
+// RecoverMigration marks a migration as recovered (manual intervention).
+// Only succeeds if the migration is currently in failed state.
 func (c *Client) RecoverMigration(ctx context.Context, name string) error {
-	_, err := c.db.ExecContext(ctx, `
+	result, err := c.db.ExecContext(ctx, `
 		UPDATE _scurry_.migrations
 		SET status = $2, completed_at = now(), failed_statement = NULL, error_msg = NULL
-		WHERE name = $1
-	`, name, MigrationStatusRecovered)
+		WHERE name = $1 AND status = $3
+	`, name, MigrationStatusRecovered, MigrationStatusFailed)
 	if err != nil {
 		return fmt.Errorf("failed to recover migration %s: %w", name, err)
 	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("migration %s is not in failed state", name)
+	}
+
 	return nil
 }
 
-// ResetMigrationForRetry resets a failed migration to pending state for retry
+// ResetMigrationForRetry resets a failed migration to pending state for retry.
+// Only succeeds if the migration is currently in failed state.
 func (c *Client) ResetMigrationForRetry(ctx context.Context, name, checksum string) error {
-	_, err := c.db.ExecContext(ctx, `
+	result, err := c.db.ExecContext(ctx, `
 		UPDATE _scurry_.migrations
 		SET status = $2, checksum = $3, started_at = now(), completed_at = NULL, failed_statement = NULL, error_msg = NULL
-		WHERE name = $1
-	`, name, MigrationStatusPending, checksum)
+		WHERE name = $1 AND status = $4
+	`, name, MigrationStatusPending, checksum, MigrationStatusFailed)
 	if err != nil {
 		return fmt.Errorf("failed to reset migration %s for retry: %w", name, err)
 	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("migration %s is not in failed state", name)
+	}
+
 	return nil
 }
 
@@ -419,83 +274,4 @@ func (c *Client) HasRunningAsyncMigration(ctx context.Context) (*AppliedMigratio
 		return nil, fmt.Errorf("failed to check for running async migration: %w", err)
 	}
 	return &m, nil
-}
-
-// SplitStatements parses SQL into individual statements using the CockroachDB parser
-func SplitStatements(sqlContent string) ([]string, error) {
-	statements, err := parser.Parse(sqlContent)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SQL: %w", err)
-	}
-
-	var results []string
-	for _, stmt := range statements {
-		results = append(results, stmt.AST.String())
-	}
-	return results, nil
-}
-
-// ExecuteMigrationWithTracking executes a migration with statement-level tracking
-// Returns the index of the failed statement (0-based) and any error
-func (c *Client) ExecuteMigrationWithTracking(ctx context.Context, migration Migration) error {
-	// Parse SQL into statements
-	statements, err := SplitStatements(migration.SQL)
-	if err != nil {
-		return fmt.Errorf("failed to parse migration %s: %w", migration.Name, err)
-	}
-
-	// Record migration as pending
-	if err := c.StartMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
-		return err
-	}
-
-	// Execute statements one at a time
-	for _, stmt := range statements {
-		_, err := c.db.ExecContext(ctx, stmt)
-		if err != nil {
-			// Record failure
-			if failErr := c.FailMigration(ctx, migration.Name, stmt, err.Error()); failErr != nil {
-				return fmt.Errorf("migration failed and could not record failure: %w (original error: %v)", failErr, err)
-			}
-			return fmt.Errorf("failed to execute statement: %w", err)
-		}
-	}
-
-	// Mark as completed
-	if err := c.CompleteMigration(ctx, migration.Name); err != nil {
-		return fmt.Errorf("migration succeeded but failed to mark as completed: %w", err)
-	}
-
-	return nil
-}
-
-// ExecuteRemainingStatements executes statements after the failed one
-func (c *Client) ExecuteRemainingStatements(ctx context.Context, migration Migration, failedStatement string) error {
-	// Parse SQL into statements
-	statements, err := SplitStatements(migration.SQL)
-	if err != nil {
-		return fmt.Errorf("failed to parse migration: %w", err)
-	}
-
-	// Find the failed statement and execute everything after it
-	foundFailed := false
-	for _, stmt := range statements {
-		if !foundFailed {
-			if stmt == failedStatement {
-				foundFailed = true
-			}
-			continue
-		}
-		// Execute remaining statements
-		_, err := c.db.ExecContext(ctx, stmt)
-		if err != nil {
-			return fmt.Errorf("failed to execute remaining statement: %w", err)
-		}
-	}
-
-	if !foundFailed {
-		return fmt.Errorf("could not find failed statement in migration SQL; the migration file may have been modified since the failure")
-	}
-
-	return nil
 }

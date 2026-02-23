@@ -133,24 +133,20 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Partition into sync and async migrations
-	var syncMigrations, asyncMigrations []db.Migration
+	// Build execution list preserving timestamp order, skipping async unless --include-async
+	var migrationsToExecute []db.Migration
+	var skippedAsync []db.Migration
 	for _, m := range unappliedMigrations {
-		if m.Mode == string(migrationpkg.ModeAsync) {
-			asyncMigrations = append(asyncMigrations, m)
-		} else {
-			syncMigrations = append(syncMigrations, m)
+		if m.Mode == db.MigrationModeAsync && !executeIncludeAsync {
+			skippedAsync = append(skippedAsync, m)
+			continue
 		}
+		migrationsToExecute = append(migrationsToExecute, m)
 	}
 
-	// Build the execution list: sync first, then async (if included)
-	var migrationsToExecute []db.Migration
-	migrationsToExecute = append(migrationsToExecute, syncMigrations...)
-	if executeIncludeAsync {
-		migrationsToExecute = append(migrationsToExecute, asyncMigrations...)
-	} else if len(asyncMigrations) > 0 {
-		fmt.Printf("\n%s\n", ui.Warning(fmt.Sprintf("Skipping %d async migration(s):", len(asyncMigrations))))
-		for _, m := range asyncMigrations {
+	if len(skippedAsync) > 0 {
+		fmt.Printf("\n%s\n", ui.Warning(fmt.Sprintf("Skipping %d async migration(s):", len(skippedAsync))))
+		for _, m := range skippedAsync {
 			fmt.Printf("  - %s\n", m.Name)
 		}
 		fmt.Println(ui.Info("Use --include-async to execute all migrations"))
@@ -166,7 +162,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\n%s\n", ui.Header("Migrations to execute:"))
 	for i, migration := range migrationsToExecute {
 		modeLabel := ""
-		if migration.Mode == string(migrationpkg.ModeAsync) {
+		if migration.Mode == db.MigrationModeAsync {
 			modeLabel = " (async)"
 		}
 		fmt.Printf("  %d. %s%s\n", i+1, migration.Name, modeLabel)
@@ -181,11 +177,11 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 	// Confirmation prompt
 	if !executeForce {
-		fmt.Printf("%s ", ui.Header("Execute these migrations?"))
-		fmt.Print("[y/N]: ")
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
+		confirmed, err := ui.ConfirmPrompt("Execute these migrations?")
+		if err != nil {
+			return err
+		}
+		if !confirmed {
 			fmt.Println(ui.Info("Aborted"))
 			return nil
 		}
@@ -203,23 +199,23 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("failed to check dependencies for %s: %w", migration.Name, err)
 			}
 			if len(unmet) > 0 {
-				fmt.Printf("Skipping %s (%d/%d): unmet dependencies: %s\n",
+				fmt.Println(ui.Warning(fmt.Sprintf("Skipping %s (%d/%d): unmet dependencies: %s",
 					migration.Name, i+1, len(migrationsToExecute),
-					strings.Join(unmet, ", "))
+					strings.Join(unmet, ", "))))
 				skipped++
 				continue
 			}
 		}
 
 		// If this is an async migration, check if another async is already running
-		if migration.Mode == string(migrationpkg.ModeAsync) {
+		if migration.Mode == db.MigrationModeAsync {
 			running, err := dbClient.HasRunningAsyncMigration(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to check for running async migration: %w", err)
 			}
 			if running != nil {
-				fmt.Printf("Skipping %s (%d/%d): async migration %q is still running\n",
-					migration.Name, i+1, len(migrationsToExecute), running.Name)
+				fmt.Println(ui.Warning(fmt.Sprintf("Skipping %s (%d/%d): async migration %q is still running",
+					migration.Name, i+1, len(migrationsToExecute), running.Name)))
 				skipped++
 				continue
 			}
@@ -321,8 +317,11 @@ func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
 		checksum := computeChecksum(sql)
 
 		// Parse header and determine mode
-		mode := string(migrationpkg.ModeSync)
-		header, _ := migrationpkg.ParseHeader(sql)
+		mode := db.MigrationModeSync
+		header, headerErr := migrationpkg.ParseHeader(sql)
+		if headerErr != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Invalid header in %s: %v (defaulting to sync)", dir, headerErr)))
+		}
 		if header != nil {
 			mode = string(header.Mode)
 		}

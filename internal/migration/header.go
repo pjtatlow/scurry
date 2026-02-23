@@ -54,6 +54,9 @@ func ParseHeader(sql string) (*Header, error) {
 				return nil, fmt.Errorf("invalid mode: %q", value)
 			}
 		case "depends_on":
+			if value == "" {
+				return nil, fmt.Errorf("depends_on must not be empty")
+			}
 			h.DependsOn = strings.Split(value, ";")
 		default:
 			return nil, fmt.Errorf("unknown header field: %q", key)

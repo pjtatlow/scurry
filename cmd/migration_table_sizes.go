@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
@@ -17,7 +16,7 @@ import (
 var largeTableThreshold int64
 
 var migrationStatPullCmd = &cobra.Command{
-	Use:   "stat-pull",
+	Use:   "table-sizes",
 	Short: "Fetch table statistics from the database and write table_sizes.yaml",
 	Long: `Query the database for table row counts and sizes, then write
 the results to migrations/table_sizes.yaml. This file is used by
@@ -34,14 +33,7 @@ func init() {
 
 func runMigrationStatPull(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
-
-	err := doMigrationStatPull(ctx)
-	if err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(1)
-	}
-
-	return nil
+	return doMigrationStatPull(ctx)
 }
 
 func doMigrationStatPull(ctx context.Context) error {

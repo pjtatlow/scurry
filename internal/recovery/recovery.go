@@ -155,7 +155,7 @@ func PromptRecoveryOption(config RecoveryPromptConfig) (string, error) {
 	// Build options list
 	options := []huh.Option[string]{
 		huh.NewOption("Try again - Re-run all statements from the beginning", OptionTryAgain),
-		huh.NewOption("Mark as succeeded - Assumes you handled executing this migration manually.", OptionMarkSucceeded),
+		huh.NewOption("Mark as succeeded - Execute remaining statements and mark as recovered", OptionMarkSucceeded),
 	}
 
 	if config.IncludeDropDatabase {

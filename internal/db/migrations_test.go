@@ -417,6 +417,128 @@ func TestRecoverMigration(t *testing.T) {
 	assert.Nil(t, failed)
 }
 
+func TestRecoverMigrationStatusGuard(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, client *Client) string // returns migration name
+		wantErr bool
+	}{
+		{
+			name: "recover non-existent migration",
+			setup: func(t *testing.T, client *Client) string {
+				return "20240101120000_does_not_exist"
+			},
+			wantErr: true,
+		},
+		{
+			name: "recover already succeeded migration",
+			setup: func(t *testing.T, client *Client) string {
+				name := "20240101120000_already_succeeded"
+				err := client.RecordMigration(ctx, name, "abc123", false)
+				require.NoError(t, err)
+				return name
+			},
+			wantErr: true,
+		},
+		{
+			name: "recover pending migration",
+			setup: func(t *testing.T, client *Client) string {
+				name := "20240101120000_still_pending"
+				err := client.StartMigration(ctx, name, "abc123", false)
+				require.NoError(t, err)
+				return name
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			err = client.InitMigrationHistory(ctx)
+			require.NoError(t, err)
+
+			name := tt.setup(t, client)
+			err = client.RecoverMigration(ctx, name)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not in failed state")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestResetMigrationForRetryStatusGuard(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, client *Client) string // returns migration name
+		wantErr bool
+	}{
+		{
+			name: "reset non-existent migration",
+			setup: func(t *testing.T, client *Client) string {
+				return "20240101120000_does_not_exist"
+			},
+			wantErr: true,
+		},
+		{
+			name: "reset already succeeded migration",
+			setup: func(t *testing.T, client *Client) string {
+				name := "20240101120000_already_succeeded"
+				err := client.RecordMigration(ctx, name, "abc123", false)
+				require.NoError(t, err)
+				return name
+			},
+			wantErr: true,
+		},
+		{
+			name: "reset pending migration",
+			setup: func(t *testing.T, client *Client) string {
+				name := "20240101120000_still_pending"
+				err := client.StartMigration(ctx, name, "abc123", false)
+				require.NoError(t, err)
+				return name
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			err = client.InitMigrationHistory(ctx)
+			require.NoError(t, err)
+
+			name := tt.setup(t, client)
+			err = client.ResetMigrationForRetry(ctx, name, "new_checksum")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not in failed state")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestResetMigrationForRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -943,4 +1065,96 @@ func TestExecuteRemainingStatements(t *testing.T) {
 	`).Scan(&exists)
 	require.NoError(t, err)
 	assert.True(t, exists, "remaining_test_3 should have been created")
+}
+
+func TestExecuteRemainingStatements_EdgeCases(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name            string
+		setup           func(t *testing.T, client *Client)
+		migration       Migration
+		failedStatement string
+		wantErr         bool
+		errContains     string
+	}{
+		{
+			name:  "failed statement not found",
+			setup: func(t *testing.T, client *Client) {},
+			migration: Migration{
+				Name: "20240101120000_not_found",
+				SQL: `
+					CREATE TABLE nf_table_1 (id INT PRIMARY KEY);
+					CREATE TABLE nf_table_2 (id INT PRIMARY KEY);
+				`,
+				Checksum: "not_found_checksum",
+			},
+			failedStatement: "CREATE TABLE nonexistent_table (id INT8 PRIMARY KEY)",
+			wantErr:         true,
+			errContains:     "could not find failed statement",
+		},
+		{
+			name:  "remaining statement fails",
+			setup: func(t *testing.T, client *Client) {},
+			migration: Migration{
+				Name: "20240101120000_remaining_fail",
+				SQL: `
+					CREATE TABLE rf_table_1 (id INT PRIMARY KEY);
+					ALTER TABLE rf_nonexistent_table ADD COLUMN foo STRING;
+				`,
+				Checksum: "remaining_fail_checksum",
+			},
+			// The failed statement is the first one (normalized by parser)
+			failedStatement: "CREATE TABLE rf_table_1 (id INT8 PRIMARY KEY)",
+			wantErr:         true,
+			errContains:     "failed to execute remaining statement",
+		},
+		{
+			name: "failed statement is the last statement",
+			setup: func(t *testing.T, client *Client) {
+				// Pre-create the tables that would have succeeded before the last one
+				_, err := client.ExecContext(ctx, "CREATE TABLE last_table_1 (id INT PRIMARY KEY)")
+				require.NoError(t, err)
+				_, err = client.ExecContext(ctx, "CREATE TABLE last_table_2 (id INT PRIMARY KEY)")
+				require.NoError(t, err)
+			},
+			migration: Migration{
+				Name: "20240101120000_last_stmt",
+				SQL: `
+					CREATE TABLE last_table_1 (id INT PRIMARY KEY);
+					CREATE TABLE last_table_2 (id INT PRIMARY KEY);
+					CREATE TABLE last_table_3 (id INT PRIMARY KEY);
+				`,
+				Checksum: "last_stmt_checksum",
+			},
+			// The failed statement is the last one (normalized by parser)
+			failedStatement: "CREATE TABLE last_table_3 (id INT8 PRIMARY KEY)",
+			wantErr:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			err = client.InitMigrationHistory(ctx)
+			require.NoError(t, err)
+
+			tt.setup(t, client)
+
+			err = client.ExecuteRemainingStatements(ctx, tt.migration, tt.failedStatement)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
 }

@@ -69,6 +69,11 @@ func TestParseHeader(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "empty depends_on value",
+			sql:     "-- scurry:mode=async,depends_on=\nCREATE TABLE t (id INT);",
+			wantErr: true,
+		},
+		{
 			name: "header only no trailing newline",
 			sql:  "-- scurry:mode=sync",
 			want: &Header{Mode: ModeSync},

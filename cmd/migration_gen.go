@@ -315,7 +315,7 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
 
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Migration created successfully! Apply it to your database with: scurry migration apply %s", migrationDirName)))
+	fmt.Println(ui.Info("Migration created successfully! Apply it to your database with: scurry migration execute"))
 
 	return nil
 }
