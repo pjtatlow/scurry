@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "recovery",
+    srcs = ["recovery.go"],
+    importpath = "github.com/pjtatlow/scurry/internal/recovery",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/db",
+        "//internal/ui",
+        "@com_github_charmbracelet_huh//:huh",
+    ],
+)

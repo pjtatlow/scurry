@@ -12,11 +12,11 @@ func TestLoadTableSizes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		content    string
-		writeFile  bool
-		want       *TableSizes
-		wantErr    bool
+		name      string
+		content   string
+		writeFile bool
+		want      *TableSizes
+		wantErr   bool
 	}{
 		{
 			name:      "valid file",

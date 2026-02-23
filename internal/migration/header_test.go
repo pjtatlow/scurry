@@ -13,10 +13,10 @@ func TestParseHeader(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		sql       string
-		want      *Header
-		wantErr   bool
+		name    string
+		sql     string
+		want    *Header
+		wantErr bool
 	}{
 		{
 			name: "sync mode",
