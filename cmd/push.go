@@ -298,7 +298,7 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 		fmt.Println()
 
 		for i, stmt := range retryStatements {
-			fmt.Printf("%s %s\n", ui.Info(fmt.Sprintf("%d.", i+1)), ui.SqlCode(stmt))
+			fmt.Printf("%s %s\n", ui.Info(fmt.Sprintf("%d/%d:", i+1, len(retryStatements))), ui.SqlCode(stmt))
 			if stmtErr := opts.DbClient.ExecuteBulkDDL(ctx, stmt); stmtErr != nil {
 				fmt.Println()
 				fmt.Println(ui.Error(fmt.Sprintf("✗ Statement %d failed:", i+1)))
