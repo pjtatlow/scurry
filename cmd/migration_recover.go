@@ -44,6 +44,10 @@ func runMigrationRecover(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	fs := afero.NewOsFs()
 
+	if flags.DbUrl == "" {
+		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
+	}
+
 	// Check for interactive terminal
 	if !ui.IsInteractive() {
 		return fmt.Errorf("migration recover requires an interactive terminal\nRun this command in a terminal with TTY support")

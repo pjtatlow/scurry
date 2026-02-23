@@ -62,6 +62,10 @@ func init() {
 func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
+	if flags.DbUrl == "" {
+		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
+	}
+
 	// Load all migrations from disk
 	migrations, err := loadMigrationsForExecution(afero.NewOsFs())
 	if err != nil {

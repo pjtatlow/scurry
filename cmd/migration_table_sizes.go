@@ -39,6 +39,10 @@ func runMigrationStatPull(cmd *cobra.Command, args []string) error {
 func doMigrationStatPull(ctx context.Context) error {
 	fs := afero.NewOsFs()
 
+	if flags.DbUrl == "" {
+		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
+	}
+
 	if err := validateMigrationsDir(fs); err != nil {
 		return err
 	}
