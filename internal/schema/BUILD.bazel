@@ -37,6 +37,7 @@ go_test(
         "computed_column_fix_test.go",
         "diff_test.go",
         "expressions_test.go",
+        "migrations_test.go",
         "order_test.go",
         "schema_test.go",
         "sequences_test.go",

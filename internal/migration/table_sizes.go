@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	tableSizesFileName        = "table_sizes.yaml"
+	tableSizesFileName               = "table_sizes.yaml"
 	DefaultLargeTableThreshold int64 = 100000
 )
 

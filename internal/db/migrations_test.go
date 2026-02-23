@@ -82,7 +82,7 @@ func TestGenerateMigrationsTableAlterStatements(t *testing.T) {
 			`,
 			desiredSchema:      DesiredMigrationsTableSchema,
 			expectedStatements: nil,
-			wantErr:           false,
+			wantErr:            false,
 		},
 		{
 			name: "partial upgrade - only missing some columns",

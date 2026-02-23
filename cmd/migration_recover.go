@@ -40,7 +40,6 @@ func init() {
 	flags.AddDbUrl(migrationRecoverCmd)
 }
 
-
 func runMigrationRecover(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	fs := afero.NewOsFs()
@@ -159,7 +158,6 @@ func runMigrationRecover(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-
 func displayMigrationInfo(failedMigration *db.AppliedMigration, migrationSQL string) {
 	fmt.Println()
 
@@ -191,4 +189,3 @@ func displayMigrationInfo(failedMigration *db.AppliedMigration, migrationSQL str
 	fmt.Println(ui.Header("Full Migration Content:"))
 	fmt.Println(ui.SqlCode(migrationSQL))
 }
-
