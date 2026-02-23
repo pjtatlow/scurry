@@ -150,4 +150,3 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 	// Get the new schema from the database
 	return schema.LoadFromDatabase(ctx, client)
 }
-
