@@ -14,7 +14,6 @@ import (
 	"github.com/pjtatlow/scurry/internal/flags"
 	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
-	"github.com/pjtatlow/scurry/internal/ui"
 )
 
 var migrationCmd = &cobra.Command{
@@ -152,47 +151,3 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 	return schema.LoadFromDatabase(ctx, client)
 }
 
-// markMigrationAsAppliedIfMatches connects to the local database, compares its schema
-// with the expected schema, and if they match, records the migration as applied.
-// We record with an empty checksum since the migration was just created locally and
-// we don't want false "modified" warnings when the file is later executed elsewhere.
-func markMigrationAsAppliedIfMatches(ctx context.Context, migrationName string, expectedSchema *schema.Schema, async bool) error {
-	// Connect to local database
-	dbClient, err := db.Connect(ctx, flags.DbUrl)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-	defer dbClient.Close()
-
-	// Initialize migration history table
-	if err := dbClient.InitMigrationHistory(ctx); err != nil {
-		return fmt.Errorf("failed to initialize migration history: %w", err)
-	}
-
-	// Load schema from local database
-	localDbSchema, err := schema.LoadFromDatabase(ctx, dbClient)
-	if err != nil {
-		return fmt.Errorf("failed to load schema from database: %w", err)
-	}
-
-	// Compare local DB schema with expected schema
-	diffResult := schema.Compare(expectedSchema, localDbSchema)
-	if diffResult.HasChanges() {
-		fmt.Println(ui.Warning("Local database schema does not match expected schema after migration"))
-		fmt.Println(ui.Warning("Migration will not be marked as applied"))
-		if flags.Verbose {
-			fmt.Println(ui.Subtle("Differences:"))
-			fmt.Println(ui.Subtle(diffResult.Summary()))
-		}
-		return nil
-	}
-
-	// Schemas match - record the migration as applied with empty checksum
-	// Empty checksum indicates this was marked during creation, not execution
-	if err := dbClient.RecordMigration(ctx, migrationName, "", async); err != nil {
-		return fmt.Errorf("failed to record migration: %w", err)
-	}
-
-	fmt.Println(ui.Success(fmt.Sprintf("✓ Marked migration as applied in local database: %s", migrationName)))
-	return nil
-}
