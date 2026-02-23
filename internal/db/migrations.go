@@ -9,6 +9,7 @@ import (
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	"github.com/lib/pq"
 )
 
 // DesiredMigrationsTableSchema is embedded from schema/migrations_table.sql
@@ -19,10 +20,11 @@ var DesiredMigrationsTableSchema string
 
 // Migration represents a migration file with its metadata
 type Migration struct {
-	Name     string
-	SQL      string
-	Checksum string
-	Mode     string // "sync", "async", or "" (treated as sync)
+	Name      string
+	SQL       string
+	Checksum  string
+	Mode      string // "sync", "async", or "" (treated as sync)
+	DependsOn []string
 }
 
 // Migration status constants
@@ -44,6 +46,7 @@ type AppliedMigration struct {
 	ExecutedBy      string
 	FailedStatement *string
 	ErrorMsg        *string
+	Async           bool
 }
 
 // InitMigrationHistory creates the _scurry_ schema and migrations table if they don't exist.
@@ -181,7 +184,7 @@ func generateMigrationsTableAlterStatements(currentSQL, desiredSQL string) ([]st
 // GetAppliedMigrations returns all migrations that have been applied to the database
 func (c *Client) GetAppliedMigrations(ctx context.Context) ([]AppliedMigration, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT name, checksum, status, started_at, completed_at, applied_at, executed_by, failed_statement, error_msg
+		SELECT name, checksum, status, started_at, completed_at, applied_at, executed_by, failed_statement, error_msg, async
 		FROM _scurry_.migrations
 		ORDER BY name ASC
 	`)
@@ -193,7 +196,7 @@ func (c *Client) GetAppliedMigrations(ctx context.Context) ([]AppliedMigration, 
 	var migrations []AppliedMigration
 	for rows.Next() {
 		var m AppliedMigration
-		if err := rows.Scan(&m.Name, &m.Checksum, &m.Status, &m.StartedAt, &m.CompletedAt, &m.AppliedAt, &m.ExecutedBy, &m.FailedStatement, &m.ErrorMsg); err != nil {
+		if err := rows.Scan(&m.Name, &m.Checksum, &m.Status, &m.StartedAt, &m.CompletedAt, &m.AppliedAt, &m.ExecutedBy, &m.FailedStatement, &m.ErrorMsg, &m.Async); err != nil {
 			return nil, fmt.Errorf("failed to scan migration: %w", err)
 		}
 		migrations = append(migrations, m)
@@ -204,11 +207,11 @@ func (c *Client) GetAppliedMigrations(ctx context.Context) ([]AppliedMigration, 
 
 // RecordMigration records a migration as applied in the history table
 // This is used for marking migrations as succeeded without tracking execution
-func (c *Client) RecordMigration(ctx context.Context, name, checksum string) error {
+func (c *Client) RecordMigration(ctx context.Context, name, checksum string, async bool) error {
 	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO _scurry_.migrations (name, checksum, status, completed_at)
-		VALUES ($1, $2, $3, now())
-	`, name, checksum, MigrationStatusSucceeded)
+		INSERT INTO _scurry_.migrations (name, checksum, status, completed_at, async)
+		VALUES ($1, $2, $3, now(), $4)
+	`, name, checksum, MigrationStatusSucceeded, async)
 	if err != nil {
 		return fmt.Errorf("failed to record migration %s: %w", name, err)
 	}
@@ -220,7 +223,7 @@ func (c *Client) RecordMigration(ctx context.Context, name, checksum string) err
 // to an empty database or a legacy database without migration tracking).
 func (c *Client) MarkAllMigrationsComplete(ctx context.Context, migrations []Migration) error {
 	for _, migration := range migrations {
-		if err := c.RecordMigration(ctx, migration.Name, migration.Checksum); err != nil {
+		if err := c.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
 			return err
 		}
 	}
@@ -238,7 +241,7 @@ func (c *Client) ExecuteMigration(ctx context.Context, migration Migration) erro
 	}
 
 	// Record the migration in the history table
-	if err := c.RecordMigration(ctx, migration.Name, migration.Checksum); err != nil {
+	if err := c.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
 		return fmt.Errorf("migration %s succeeded but failed to record in history: %w", migration.Name, err)
 	}
 
@@ -246,11 +249,11 @@ func (c *Client) ExecuteMigration(ctx context.Context, migration Migration) erro
 }
 
 // StartMigration records a migration as pending with started_at timestamp
-func (c *Client) StartMigration(ctx context.Context, name, checksum string) error {
+func (c *Client) StartMigration(ctx context.Context, name, checksum string, async bool) error {
 	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO _scurry_.migrations (name, checksum, status, started_at)
-		VALUES ($1, $2, $3, now())
-	`, name, checksum, MigrationStatusPending)
+		INSERT INTO _scurry_.migrations (name, checksum, status, started_at, async)
+		VALUES ($1, $2, $3, now(), $4)
+	`, name, checksum, MigrationStatusPending, async)
 	if err != nil {
 		return fmt.Errorf("failed to start migration %s: %w", name, err)
 	}
@@ -333,23 +336,87 @@ func (c *Client) ResetMigrationForRetry(ctx context.Context, name, checksum stri
 	return nil
 }
 
-// GetFailedMigration returns the failed migration if one exists
+// GetFailedMigration returns a failed or pending migration if one exists.
+// A failed migration always blocks. A pending sync migration blocks.
+// A pending async migration does NOT block (it's expected to be in-flight).
 func (c *Client) GetFailedMigration(ctx context.Context) (*AppliedMigration, error) {
 	var m AppliedMigration
 	err := c.db.QueryRowContext(ctx, `
-		SELECT name, checksum, status, started_at, completed_at, applied_at, executed_by, failed_statement, error_msg
+		SELECT name, checksum, status, started_at, completed_at, applied_at, executed_by, failed_statement, error_msg, async
 		FROM _scurry_.migrations
-		WHERE status = $1 OR status = $2
+		WHERE status = $1
+		   OR (status = $2 AND async = false)
 		ORDER BY name ASC
 		LIMIT 1
 	`, MigrationStatusFailed, MigrationStatusPending).Scan(
-		&m.Name, &m.Checksum, &m.Status, &m.StartedAt, &m.CompletedAt, &m.AppliedAt, &m.ExecutedBy, &m.FailedStatement, &m.ErrorMsg,
+		&m.Name, &m.Checksum, &m.Status, &m.StartedAt, &m.CompletedAt, &m.AppliedAt, &m.ExecutedBy, &m.FailedStatement, &m.ErrorMsg, &m.Async,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get failed migration: %w", err)
+	}
+	return &m, nil
+}
+
+// CheckDependenciesMet queries the migrations table and returns any dependency names
+// that have not succeeded or been recovered. If a name doesn't exist in the table at
+// all, it is also considered unmet.
+func (c *Client) CheckDependenciesMet(ctx context.Context, dependsOn []string) ([]string, error) {
+	if len(dependsOn) == 0 {
+		return nil, nil
+	}
+
+	// Query all matching migrations that are in a "done" state
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT name FROM _scurry_.migrations
+		WHERE name = ANY($1)
+		  AND status IN ($2, $3)
+	`, pq.Array(dependsOn), MigrationStatusSucceeded, MigrationStatusRecovered)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	met := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan dependency: %w", err)
+		}
+		met[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var unmet []string
+	for _, dep := range dependsOn {
+		if !met[dep] {
+			unmet = append(unmet, dep)
+		}
+	}
+	return unmet, nil
+}
+
+// HasRunningAsyncMigration returns the pending async migration if one exists, nil otherwise.
+func (c *Client) HasRunningAsyncMigration(ctx context.Context) (*AppliedMigration, error) {
+	var m AppliedMigration
+	err := c.db.QueryRowContext(ctx, `
+		SELECT name, checksum, status, started_at, completed_at, applied_at, executed_by, failed_statement, error_msg, async
+		FROM _scurry_.migrations
+		WHERE async = true AND status = $1
+		ORDER BY name ASC
+		LIMIT 1
+	`, MigrationStatusPending).Scan(
+		&m.Name, &m.Checksum, &m.Status, &m.StartedAt, &m.CompletedAt, &m.AppliedAt, &m.ExecutedBy, &m.FailedStatement, &m.ErrorMsg, &m.Async,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for running async migration: %w", err)
 	}
 	return &m, nil
 }
@@ -378,7 +445,7 @@ func (c *Client) ExecuteMigrationWithTracking(ctx context.Context, migration Mig
 	}
 
 	// Record migration as pending
-	if err := c.StartMigration(ctx, migration.Name, migration.Checksum); err != nil {
+	if err := c.StartMigration(ctx, migration.Name, migration.Checksum, migration.Mode == "async"); err != nil {
 		return err
 	}
 
@@ -424,6 +491,10 @@ func (c *Client) ExecuteRemainingStatements(ctx context.Context, migration Migra
 		if err != nil {
 			return fmt.Errorf("failed to execute remaining statement: %w", err)
 		}
+	}
+
+	if !foundFailed {
+		return fmt.Errorf("could not find failed statement in migration SQL; the migration file may have been modified since the failure")
 	}
 
 	return nil

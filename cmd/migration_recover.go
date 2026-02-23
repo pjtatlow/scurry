@@ -10,6 +10,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/recovery"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -86,8 +87,9 @@ func runMigrationRecover(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
-	migrationSQL := string(content)
-	currentChecksum := computeChecksum(migrationSQL)
+	rawSQL := string(content)
+	currentChecksum := computeChecksum(rawSQL)
+	migrationSQL := migrationpkg.StripHeader(rawSQL)
 
 	// Check for checksum mismatch
 	if failedMigration.Checksum != "" && failedMigration.Checksum != currentChecksum {

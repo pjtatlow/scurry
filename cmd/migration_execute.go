@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -91,7 +92,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check for failed or pending migrations that need recovery
+	// Check for failed or pending sync migrations that need recovery
 	failedMigration, err := dbClient.GetFailedMigration(ctx)
 	if err != nil {
 		return err
@@ -142,11 +143,12 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Determine which migrations to execute
-	migrationsToExecute := unappliedMigrations
-	if !executeIncludeAsync && len(asyncMigrations) > 0 {
-		migrationsToExecute = syncMigrations
-
+	// Build the execution list: sync first, then async (if included)
+	var migrationsToExecute []db.Migration
+	migrationsToExecute = append(migrationsToExecute, syncMigrations...)
+	if executeIncludeAsync {
+		migrationsToExecute = append(migrationsToExecute, asyncMigrations...)
+	} else if len(asyncMigrations) > 0 {
 		fmt.Printf("\n%s\n", ui.Warning(fmt.Sprintf("Skipping %d async migration(s):", len(asyncMigrations))))
 		for _, m := range asyncMigrations {
 			fmt.Printf("  - %s\n", m.Name)
@@ -163,7 +165,11 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	// Display migrations to be executed
 	fmt.Printf("\n%s\n", ui.Header("Migrations to execute:"))
 	for i, migration := range migrationsToExecute {
-		fmt.Printf("  %d. %s\n", i+1, migration.Name)
+		modeLabel := ""
+		if migration.Mode == string(migrationpkg.ModeAsync) {
+			modeLabel = " (async)"
+		}
+		fmt.Printf("  %d. %s%s\n", i+1, migration.Name, modeLabel)
 	}
 	fmt.Println()
 
@@ -187,7 +193,38 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 	// Execute migrations one by one
 	fmt.Println()
+	executed := 0
+	skipped := 0
 	for i, migration := range migrationsToExecute {
+		// Check depends_on dependencies
+		if len(migration.DependsOn) > 0 {
+			unmet, err := dbClient.CheckDependenciesMet(ctx, migration.DependsOn)
+			if err != nil {
+				return fmt.Errorf("failed to check dependencies for %s: %w", migration.Name, err)
+			}
+			if len(unmet) > 0 {
+				fmt.Printf("Skipping %s (%d/%d): unmet dependencies: %s\n",
+					migration.Name, i+1, len(migrationsToExecute),
+					strings.Join(unmet, ", "))
+				skipped++
+				continue
+			}
+		}
+
+		// If this is an async migration, check if another async is already running
+		if migration.Mode == string(migrationpkg.ModeAsync) {
+			running, err := dbClient.HasRunningAsyncMigration(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to check for running async migration: %w", err)
+			}
+			if running != nil {
+				fmt.Printf("Skipping %s (%d/%d): async migration %q is still running\n",
+					migration.Name, i+1, len(migrationsToExecute), running.Name)
+				skipped++
+				continue
+			}
+		}
+
 		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(migrationsToExecute))
 
 		err := dbClient.ExecuteMigrationWithTracking(ctx, migration)
@@ -198,11 +235,8 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 			fmt.Println()
 
 			// Show progress
-			if i > 0 {
-				fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Successfully applied %d migration(s) before failure:", i)))
-				for j := range i {
-					fmt.Printf("  ✓ %s\n", migrationsToExecute[j].Name)
-				}
+			if executed > 0 {
+				fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Successfully applied %d migration(s) before failure", executed)))
 				fmt.Println()
 			}
 
@@ -215,12 +249,20 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Printf("  %s\n", ui.Success("✓ Success"))
+		executed++
 	}
 
-	// All migrations completed successfully
+	// Summary
 	fmt.Println()
-	fmt.Println(ui.Success("All migrations executed successfully!"))
-	fmt.Printf("%s\n", ui.Success(fmt.Sprintf("Applied %d migration(s)", len(migrationsToExecute))))
+	if executed > 0 {
+		fmt.Println(ui.Success(fmt.Sprintf("Applied %d migration(s)", executed)))
+	}
+	if skipped > 0 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Skipped %d migration(s) due to unmet dependencies or running async", skipped)))
+	}
+	if skipped == 0 && executed > 0 {
+		fmt.Println(ui.Success("All migrations executed successfully!"))
+	}
 
 	return nil
 }
@@ -288,12 +330,19 @@ func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
 		// Strip header from SQL before execution
 		strippedSQL := migrationpkg.StripHeader(sql)
 
+		// Collect depends_on from header
+		var dependsOn []string
+		if header != nil && len(header.DependsOn) > 0 {
+			dependsOn = header.DependsOn
+		}
+
 		// Add the migration
 		allMigrations = append(allMigrations, db.Migration{
-			Name:     dir,
-			SQL:      strippedSQL,
-			Checksum: checksum,
-			Mode:     mode,
+			Name:      dir,
+			SQL:       strippedSQL,
+			Checksum:  checksum,
+			Mode:      mode,
+			DependsOn: dependsOn,
 		})
 	}
 

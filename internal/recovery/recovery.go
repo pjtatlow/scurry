@@ -70,17 +70,14 @@ func TryAgain(ctx context.Context, dbClient *db.Client, migration db.Migration) 
 	return nil
 }
 
-// MarkSucceeded marks a migration as recovered and executes any remaining statements
-// after the failed statement.
+// MarkSucceeded executes any remaining statements after the failed one, then marks
+// the migration as recovered. Remaining statements are executed first so that a
+// failure leaves the migration in its original failed state rather than marking it
+// recovered with a partially-applied schema.
 func MarkSucceeded(ctx context.Context, dbClient *db.Client, migration db.Migration, failedRecord *db.AppliedMigration) error {
 	fmt.Println()
 
-	// Mark as recovered
-	if err := dbClient.RecoverMigration(ctx, migration.Name); err != nil {
-		return fmt.Errorf("failed to mark migration as recovered: %w", err)
-	}
-
-	// If there's a failed statement, try to run remaining statements
+	// Execute remaining statements first, before changing status
 	if failedRecord != nil && failedRecord.FailedStatement != nil && *failedRecord.FailedStatement != "" {
 		fmt.Println(ui.Info("Executing remaining statements..."))
 
@@ -89,6 +86,11 @@ func MarkSucceeded(ctx context.Context, dbClient *db.Client, migration db.Migrat
 		}
 
 		fmt.Println(ui.Success("Remaining statements executed successfully"))
+	}
+
+	// Mark as recovered only after remaining statements succeed
+	if err := dbClient.RecoverMigration(ctx, migration.Name); err != nil {
+		return fmt.Errorf("failed to mark migration as recovered: %w", err)
 	}
 
 	return nil

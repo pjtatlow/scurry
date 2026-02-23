@@ -28,6 +28,7 @@ func TestDesiredMigrationsTableSchemaIsValid(t *testing.T) {
 		"executed_by",
 		"failed_statement",
 		"error_msg",
+		"async",
 	}
 	for _, col := range expectedColumns {
 		assert.Contains(t, statements[0], col, "DesiredMigrationsTableSchema should contain column %q", col)
@@ -54,6 +55,7 @@ func TestGenerateMigrationsTableAlterStatements(t *testing.T) {
 			`,
 			desiredSchema: DesiredMigrationsTableSchema,
 			expectedStatements: []string{
+				`ALTER TABLE _scurry_.migrations ADD COLUMN async BOOL NOT NULL DEFAULT false`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN completed_at TIMESTAMPTZ`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN error_msg STRING`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN failed_statement STRING`,
@@ -74,7 +76,8 @@ func TestGenerateMigrationsTableAlterStatements(t *testing.T) {
 					applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 					executed_by STRING NOT NULL DEFAULT current_user(),
 					failed_statement STRING,
-					error_msg STRING
+					error_msg STRING,
+					async BOOL NOT NULL DEFAULT false
 				)
 			`,
 			desiredSchema:      DesiredMigrationsTableSchema,
@@ -94,6 +97,7 @@ func TestGenerateMigrationsTableAlterStatements(t *testing.T) {
 			`,
 			desiredSchema: DesiredMigrationsTableSchema,
 			expectedStatements: []string{
+				`ALTER TABLE _scurry_.migrations ADD COLUMN async BOOL NOT NULL DEFAULT false`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN completed_at TIMESTAMPTZ`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN error_msg STRING`,
 				`ALTER TABLE _scurry_.migrations ADD COLUMN failed_statement STRING`,
@@ -511,6 +515,389 @@ func TestSchemaUpgradeFromOldVersion(t *testing.T) {
 	migrations, err = client.GetAppliedMigrations(ctx)
 	require.NoError(t, err)
 	require.Len(t, migrations, 2)
+}
+
+func TestAsyncFlagInMigrations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	client, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	err = client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		migration     Migration
+		expectedAsync bool
+	}{
+		{
+			name: "sync migration has async=false",
+			migration: Migration{
+				Name:     "20240101120000_sync_mig",
+				SQL:      "CREATE TABLE async_test_sync (id INT PRIMARY KEY)",
+				Checksum: "sync_checksum",
+				Mode:     "sync",
+			},
+			expectedAsync: false,
+		},
+		{
+			name: "async migration has async=true",
+			migration: Migration{
+				Name:     "20240101130000_async_mig",
+				SQL:      "CREATE TABLE async_test_async (id INT PRIMARY KEY)",
+				Checksum: "async_checksum",
+				Mode:     "async",
+			},
+			expectedAsync: true,
+		},
+		{
+			name: "empty mode migration has async=false",
+			migration: Migration{
+				Name:     "20240101140000_empty_mode_mig",
+				SQL:      "CREATE TABLE async_test_empty (id INT PRIMARY KEY)",
+				Checksum: "empty_checksum",
+				Mode:     "",
+			},
+			expectedAsync: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := client.ExecuteMigrationWithTracking(ctx, tt.migration)
+			require.NoError(t, err)
+
+			migrations, err := client.GetAppliedMigrations(ctx)
+			require.NoError(t, err)
+
+			// Find the migration we just executed
+			var found *AppliedMigration
+			for i, m := range migrations {
+				if m.Name == tt.migration.Name {
+					found = &migrations[i]
+					break
+				}
+			}
+			require.NotNil(t, found, "migration %s should be in applied migrations", tt.migration.Name)
+			assert.Equal(t, tt.expectedAsync, found.Async)
+		})
+	}
+}
+
+func TestRecordMigrationAsync(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	client, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	err = client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		migName       string
+		async         bool
+		expectedAsync bool
+	}{
+		{
+			name:          "record sync migration",
+			migName:       "20240101120000_record_sync",
+			async:         false,
+			expectedAsync: false,
+		},
+		{
+			name:          "record async migration",
+			migName:       "20240101130000_record_async",
+			async:         true,
+			expectedAsync: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := client.RecordMigration(ctx, tt.migName, "checksum", tt.async)
+			require.NoError(t, err)
+
+			migrations, err := client.GetAppliedMigrations(ctx)
+			require.NoError(t, err)
+
+			var found *AppliedMigration
+			for i, m := range migrations {
+				if m.Name == tt.migName {
+					found = &migrations[i]
+					break
+				}
+			}
+			require.NotNil(t, found)
+			assert.Equal(t, tt.expectedAsync, found.Async)
+		})
+	}
+}
+
+func TestGetFailedMigration_IgnoresPendingAsync(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	client, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	err = client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	// Start an async migration (leaves it in pending state)
+	err = client.StartMigration(ctx, "20240101120000_async_pending", "checksum1", true)
+	require.NoError(t, err)
+
+	// GetFailedMigration should NOT return the pending async migration
+	failed, err := client.GetFailedMigration(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, failed, "pending async migration should not block")
+
+	// But a pending sync migration SHOULD block
+	err = client.StartMigration(ctx, "20240101130000_sync_pending", "checksum2", false)
+	require.NoError(t, err)
+
+	failed, err = client.GetFailedMigration(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, failed)
+	assert.Equal(t, "20240101130000_sync_pending", failed.Name)
+	assert.Equal(t, MigrationStatusPending, failed.Status)
+}
+
+func TestHasRunningAsyncMigration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, client *Client)
+		expectFound bool
+		expectName  string
+	}{
+		{
+			name:        "no migrations at all",
+			setup:       func(t *testing.T, client *Client) {},
+			expectFound: false,
+		},
+		{
+			name: "pending async migration exists",
+			setup: func(t *testing.T, client *Client) {
+				err := client.StartMigration(ctx, "20240101120000_async_running", "checksum", true)
+				require.NoError(t, err)
+			},
+			expectFound: true,
+			expectName:  "20240101120000_async_running",
+		},
+		{
+			name: "pending sync migration does not count",
+			setup: func(t *testing.T, client *Client) {
+				err := client.StartMigration(ctx, "20240101120000_sync_running", "checksum", false)
+				require.NoError(t, err)
+			},
+			expectFound: false,
+		},
+		{
+			name: "completed async migration does not count",
+			setup: func(t *testing.T, client *Client) {
+				err := client.RecordMigration(ctx, "20240101120000_async_done", "checksum", true)
+				require.NoError(t, err)
+			},
+			expectFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			err = client.InitMigrationHistory(ctx)
+			require.NoError(t, err)
+
+			tt.setup(t, client)
+
+			running, err := client.HasRunningAsyncMigration(ctx)
+			require.NoError(t, err)
+
+			if tt.expectFound {
+				require.NotNil(t, running)
+				assert.Equal(t, tt.expectName, running.Name)
+				assert.True(t, running.Async)
+			} else {
+				assert.Nil(t, running)
+			}
+		})
+	}
+}
+
+func TestCheckDependenciesMet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, client *Client)
+		dependsOn   []string
+		expectUnmet []string
+	}{
+		{
+			name:        "empty depends_on returns nil",
+			setup:       func(t *testing.T, client *Client) {},
+			dependsOn:   nil,
+			expectUnmet: nil,
+		},
+		{
+			name: "all dependencies succeeded",
+			setup: func(t *testing.T, client *Client) {
+				err := client.RecordMigration(ctx, "20240101120000_dep_a", "checksum", false)
+				require.NoError(t, err)
+				err = client.RecordMigration(ctx, "20240101130000_dep_b", "checksum", false)
+				require.NoError(t, err)
+			},
+			dependsOn:   []string{"20240101120000_dep_a", "20240101130000_dep_b"},
+			expectUnmet: nil,
+		},
+		{
+			name: "recovered dependency counts as met",
+			setup: func(t *testing.T, client *Client) {
+				err := client.StartMigration(ctx, "20240101120000_dep_recovered", "checksum", false)
+				require.NoError(t, err)
+				err = client.FailMigration(ctx, "20240101120000_dep_recovered", "stmt", "error")
+				require.NoError(t, err)
+				err = client.RecoverMigration(ctx, "20240101120000_dep_recovered")
+				require.NoError(t, err)
+			},
+			dependsOn:   []string{"20240101120000_dep_recovered"},
+			expectUnmet: nil,
+		},
+		{
+			name:        "dependency not in table is unmet",
+			setup:       func(t *testing.T, client *Client) {},
+			dependsOn:   []string{"20240101120000_nonexistent"},
+			expectUnmet: []string{"20240101120000_nonexistent"},
+		},
+		{
+			name: "pending dependency is unmet",
+			setup: func(t *testing.T, client *Client) {
+				err := client.StartMigration(ctx, "20240101120000_dep_pending", "checksum", true)
+				require.NoError(t, err)
+			},
+			dependsOn:   []string{"20240101120000_dep_pending"},
+			expectUnmet: []string{"20240101120000_dep_pending"},
+		},
+		{
+			name: "failed dependency is unmet",
+			setup: func(t *testing.T, client *Client) {
+				err := client.StartMigration(ctx, "20240101120000_dep_failed", "checksum", false)
+				require.NoError(t, err)
+				err = client.FailMigration(ctx, "20240101120000_dep_failed", "stmt", "error")
+				require.NoError(t, err)
+			},
+			dependsOn:   []string{"20240101120000_dep_failed"},
+			expectUnmet: []string{"20240101120000_dep_failed"},
+		},
+		{
+			name: "mix of met and unmet dependencies",
+			setup: func(t *testing.T, client *Client) {
+				err := client.RecordMigration(ctx, "20240101120000_dep_met", "checksum", false)
+				require.NoError(t, err)
+			},
+			dependsOn:   []string{"20240101120000_dep_met", "20240101130000_dep_missing"},
+			expectUnmet: []string{"20240101130000_dep_missing"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := GetShadowDB(ctx)
+			require.NoError(t, err)
+			defer client.Close()
+
+			err = client.InitMigrationHistory(ctx)
+			require.NoError(t, err)
+
+			tt.setup(t, client)
+
+			unmet, err := client.CheckDependenciesMet(ctx, tt.dependsOn)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectUnmet, unmet)
+		})
+	}
+}
+
+func TestSchemaUpgradeAddsAsyncColumn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	client, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	// Manually create a schema without the async column (pre-async schema)
+	_, err = client.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS _scurry_`)
+	require.NoError(t, err)
+
+	_, err = client.ExecContext(ctx, `
+		CREATE TABLE _scurry_.migrations (
+			name STRING PRIMARY KEY,
+			checksum STRING NOT NULL,
+			status STRING NOT NULL DEFAULT 'succeeded',
+			started_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			executed_by STRING NOT NULL DEFAULT current_user(),
+			failed_statement STRING,
+			error_msg STRING
+		)
+	`)
+	require.NoError(t, err)
+
+	// Insert a pre-existing migration
+	_, err = client.ExecContext(ctx, `
+		INSERT INTO _scurry_.migrations (name, checksum)
+		VALUES ('20230101000000_pre_async', 'old_checksum')
+	`)
+	require.NoError(t, err)
+
+	// InitMigrationHistory should add the async column
+	err = client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	// Verify old migration defaults to async=false
+	migrations, err := client.GetAppliedMigrations(ctx)
+	require.NoError(t, err)
+	require.Len(t, migrations, 1)
+	assert.Equal(t, false, migrations[0].Async)
+
+	// Verify new async migration works
+	err = client.RecordMigration(ctx, "20240101120000_new_async", "checksum", true)
+	require.NoError(t, err)
+
+	migrations, err = client.GetAppliedMigrations(ctx)
+	require.NoError(t, err)
+	require.Len(t, migrations, 2)
+
+	// Find the new async migration
+	var found *AppliedMigration
+	for i, m := range migrations {
+		if m.Name == "20240101120000_new_async" {
+			found = &migrations[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	assert.True(t, found.Async)
 }
 
 func TestExecuteRemainingStatements(t *testing.T) {

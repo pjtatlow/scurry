@@ -164,7 +164,7 @@ func doMigrationNew(ctx context.Context) error {
 
 	// If db-url provided, check if local DB matches and mark migration as applied
 	if flags.DbUrl != "" {
-		if err := markMigrationAsAppliedIfMatches(ctx, migrationDirName, newSchema); err != nil {
+		if err := markMigrationAsAppliedIfMatches(ctx, migrationDirName, newSchema, false); err != nil {
 			fmt.Println(ui.Warning(fmt.Sprintf("Could not mark migration as applied: %v", err)))
 		}
 	}

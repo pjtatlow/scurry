@@ -156,7 +156,7 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 // with the expected schema, and if they match, records the migration as applied.
 // We record with an empty checksum since the migration was just created locally and
 // we don't want false "modified" warnings when the file is later executed elsewhere.
-func markMigrationAsAppliedIfMatches(ctx context.Context, migrationName string, expectedSchema *schema.Schema) error {
+func markMigrationAsAppliedIfMatches(ctx context.Context, migrationName string, expectedSchema *schema.Schema, async bool) error {
 	// Connect to local database
 	dbClient, err := db.Connect(ctx, flags.DbUrl)
 	if err != nil {
@@ -189,7 +189,7 @@ func markMigrationAsAppliedIfMatches(ctx context.Context, migrationName string, 
 
 	// Schemas match - record the migration as applied with empty checksum
 	// Empty checksum indicates this was marked during creation, not execution
-	if err := dbClient.RecordMigration(ctx, migrationName, ""); err != nil {
+	if err := dbClient.RecordMigration(ctx, migrationName, "", async); err != nil {
 		return fmt.Errorf("failed to record migration: %w", err)
 	}
 

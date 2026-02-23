@@ -115,12 +115,12 @@ func FindDependencies(newStatements []tree.Statement, existingMigrations []Migra
 	// excluding schema-level names (e.g. "schema:public") which are too generic.
 	newNames := set.New[string]()
 	for _, stmt := range newStatements {
-		for name := range schema.GetProvidedNames(stmt, true).Values() {
+		for name := range schema.GetProvidedNames(stmt, false).Values() {
 			if !strings.HasPrefix(name, "schema:") {
 				newNames.Add(name)
 			}
 		}
-		for name := range schema.GetDependencyNames(stmt, true).Values() {
+		for name := range schema.GetDependencyNames(stmt, false).Values() {
 			if !strings.HasPrefix(name, "schema:") {
 				newNames.Add(name)
 			}
@@ -147,12 +147,12 @@ func FindDependencies(newStatements []tree.Statement, existingMigrations []Migra
 
 		migNames := set.New[string]()
 		for _, stmt := range parsed {
-			for name := range schema.GetProvidedNames(stmt.AST, true).Values() {
+			for name := range schema.GetProvidedNames(stmt.AST, false).Values() {
 				if !strings.HasPrefix(name, "schema:") {
 					migNames.Add(name)
 				}
 			}
-			for name := range schema.GetDependencyNames(stmt.AST, true).Values() {
+			for name := range schema.GetDependencyNames(stmt.AST, false).Values() {
 				if !strings.HasPrefix(name, "schema:") {
 					migNames.Add(name)
 				}

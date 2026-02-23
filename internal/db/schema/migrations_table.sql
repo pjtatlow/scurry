@@ -10,5 +10,6 @@ CREATE TABLE _scurry_.migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     executed_by STRING NOT NULL DEFAULT current_user(),
     failed_statement STRING,
-    error_msg STRING
+    error_msg STRING,
+    async BOOL NOT NULL DEFAULT false
 );

@@ -9,8 +9,8 @@ import (
 )
 
 // GetDependencyNames returns the set of names that the given statement depends on.
-// When safe is true, unknown statement types return an empty set instead of panicking.
-func GetDependencyNames(stmt tree.Statement, safe bool) set.Set[string] {
+// When strict is true, unknown statement types cause a panic. When false, they are silently ignored.
+func GetDependencyNames(stmt tree.Statement, strict bool) set.Set[string] {
 	switch stmt := stmt.(type) {
 	case *tree.CreateTable:
 		return getCreateTableDependencies(stmt)
@@ -25,7 +25,7 @@ func GetDependencyNames(stmt tree.Statement, safe bool) set.Set[string] {
 	case *tree.AlterType:
 		return getAlterTypeDependencies(stmt)
 	case *tree.AlterTable:
-		return getAlterTableDependencies(stmt)
+		return getAlterTableDependencies(stmt, strict)
 	case *tree.CreateIndex:
 		return getIndexDependencies(stmt.Table, stmt.Columns, stmt.Storing, stmt.Predicate)
 
@@ -44,7 +44,7 @@ func GetDependencyNames(stmt tree.Statement, safe bool) set.Set[string] {
 	case *tree.CreateSchema:
 	case *tree.DropSchema:
 	default:
-		if !safe {
+		if strict {
 			panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
 		}
 	}
@@ -150,7 +150,7 @@ func getAlterTypeDependencies(stmt *tree.AlterType) set.Set[string] {
 	return deps
 }
 
-func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
+func getAlterTableDependencies(stmt *tree.AlterTable, strict bool) set.Set[string] {
 	deps := set.New[string]()
 
 	// Get table name from the statement
@@ -199,7 +199,9 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 				}
 
 			default:
-				panic(fmt.Sprintf("unexpected constraint type: %T", constraint))
+				if strict {
+					panic(fmt.Sprintf("unexpected constraint type: %T", constraint))
+				}
 			}
 		case *tree.AlterTableSetOnUpdate:
 			if c.Expr != nil {
@@ -219,7 +221,9 @@ func getAlterTableDependencies(stmt *tree.AlterTable) set.Set[string] {
 		case *tree.AlterTableResetStorageParams:
 
 		default:
-			panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
+			if strict {
+				panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
+			}
 		}
 	}
 

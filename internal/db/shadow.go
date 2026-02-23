@@ -137,6 +137,10 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 	// Disable it so tables can be freely modified without unlock overhead.
 	_, _ = client.db.ExecContext(ctx, "SET create_table_with_schema_locked = false")
 
+	// Newer CockroachDB versions restrict access to crdb_internal by default.
+	// We need it for InitMigrationHistory's schema introspection.
+	_, _ = client.db.ExecContext(ctx, "SET allow_unsafe_internals = true")
+
 	return client, nil
 }
 

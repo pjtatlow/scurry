@@ -9,8 +9,8 @@ import (
 )
 
 // GetProvidedNames returns the set of names provided (created/defined) by the given statement.
-// When safe is true, unknown statement/command types return an empty set instead of panicking.
-func GetProvidedNames(stmt tree.Statement, safe bool) set.Set[string] {
+// When strict is true, unknown statement/command types cause a panic. When false, they are silently ignored.
+func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 	names := set.New[string]()
 	switch s := stmt.(type) {
 	case *tree.CreateSchema:
@@ -108,7 +108,7 @@ func GetProvidedNames(stmt tree.Statement, safe bool) set.Set[string] {
 				case *tree.AlterTableResetStorageParams:
 
 				default:
-					if !safe {
+					if strict {
 						panic(fmt.Sprintf("unexpected ALTER TABLE command type: %T", cmd))
 					}
 				}
@@ -146,7 +146,7 @@ func GetProvidedNames(stmt tree.Statement, safe bool) set.Set[string] {
 	case *tree.CommitTransaction:
 	case *tree.DropSchema:
 	default:
-		if !safe {
+		if strict {
 			panic(fmt.Sprintf("unexpected statement type: %s", stmt.StatementTag()))
 		}
 	}

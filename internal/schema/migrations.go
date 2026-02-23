@@ -117,7 +117,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	// Collect all of the names provided by each statement group, so as we explore dependencies we can connect statements together.
 	for _, migration := range statements {
 		for _, ddl := range migration.stmts {
-			for name := range GetProvidedNames(ddl, false).Values() {
+			for name := range GetProvidedNames(ddl, true).Values() {
 				providers.add(name, migration)
 			}
 		}
@@ -127,7 +127,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	// If we don't have a provider for a requirement, we will assume it is already present or a builtin.
 	for _, migration := range statements {
 		for _, ddl := range migration.stmts {
-			for name := range GetDependencyNames(ddl, false).Values() {
+			for name := range GetDependencyNames(ddl, true).Values() {
 				if others, ok := providers[name]; ok {
 					for other := range others.Values() {
 						// Don't add self-references - a group can't depend on itself

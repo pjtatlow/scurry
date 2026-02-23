@@ -480,7 +480,7 @@ func TestPartialIndexWhereClauseColumnDependencies(t *testing.T) {
 			}
 			stmt := parsed[0].AST
 
-			deps := GetDependencyNames(stmt, false)
+			deps := GetDependencyNames(stmt, true)
 
 			if !deps.Contains(tt.wantDep) {
 				t.Errorf("expected dependency %q not found.\nGot deps: %v", tt.wantDep, deps)

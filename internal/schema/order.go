@@ -35,14 +35,14 @@ func ComputeTableInsertionOrder(tables []ObjectSchema[*tree.CreateTable]) (*Tabl
 		tableNames[stmt] = t.ResolvedName()
 
 		// Register provided names
-		for name := range GetProvidedNames(t.Ast, false).Values() {
+		for name := range GetProvidedNames(t.Ast, true).Values() {
 			providers.add(name, stmt)
 		}
 	}
 
 	// Resolve dependencies (skip self-references — those are handled separately)
 	for _, migration := range statements {
-		for name := range GetDependencyNames(migration.stmts[0], false).Values() {
+		for name := range GetDependencyNames(migration.stmts[0], true).Values() {
 			if others, ok := providers[name]; ok {
 				for other := range others.Values() {
 					if other != migration {

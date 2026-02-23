@@ -88,6 +88,9 @@ func getProdLikeClient(t *testing.T, ctx context.Context) *Client {
 	require.NoError(t, err)
 	t.Cleanup(func() { client.Close() })
 
+	// Allow access to crdb_internal (needed by InitMigrationHistory for schema introspection)
+	_, _ = client.db.ExecContext(ctx, "SET allow_unsafe_internals = true")
+
 	// Skip if CRDB version doesn't support schema_locked
 	var schemaLockedDefault string
 	err = client.db.QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&schemaLockedDefault)
