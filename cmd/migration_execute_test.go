@@ -60,8 +60,8 @@ func TestLoadMigrationsForExecution(t *testing.T) {
 		{
 			name: "sorted by timestamp",
 			files: map[string]string{
-				"20250103000000_third/migration.sql": "CREATE TABLE c (id INT PRIMARY KEY);",
-				"20250101000000_first/migration.sql": "CREATE TABLE a (id INT PRIMARY KEY);",
+				"20250103000000_third/migration.sql":  "CREATE TABLE c (id INT PRIMARY KEY);",
+				"20250101000000_first/migration.sql":  "CREATE TABLE a (id INT PRIMARY KEY);",
 				"20250102000000_second/migration.sql": "CREATE TABLE b (id INT PRIMARY KEY);",
 			},
 			wantCount: 3,
@@ -79,7 +79,7 @@ func TestLoadMigrationsForExecution(t *testing.T) {
 		{
 			name: "skips directories without migration.sql",
 			files: map[string]string{
-				"20250101000000_empty/.gitkeep": "",
+				"20250101000000_empty/.gitkeep":      "",
 				"20250102000000_valid/migration.sql": "CREATE TABLE t (id INT PRIMARY KEY);",
 			},
 			wantCount: 1,
@@ -112,7 +112,7 @@ func TestLoadMigrationsForExecution(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			migrations, err := loadMigrationsForExecution(fs)
+			migrations, err := loadMigrations(fs)
 			require.NoError(t, err)
 			assert.Len(t, migrations, tt.wantCount)
 

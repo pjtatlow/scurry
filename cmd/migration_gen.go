@@ -283,7 +283,7 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	if err == nil && len(existingMigrations) > 0 {
 		migInfos := make([]migrationpkg.MigrationInfo, len(existingMigrations))
 		for i, m := range existingMigrations {
-			migInfos[i] = migrationpkg.MigrationInfo{Name: m.name, SQL: m.sql}
+			migInfos[i] = migrationpkg.MigrationInfo{Name: m.Name, SQL: m.SQL}
 		}
 		header.DependsOn = migrationpkg.FindDependencies(newStmts, migInfos)
 	}

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "recovery",
@@ -9,5 +9,16 @@ go_library(
         "//internal/db",
         "//internal/ui",
         "@com_github_charmbracelet_huh//:huh",
+    ],
+)
+
+go_test(
+    name = "recovery_test",
+    srcs = ["recovery_test.go"],
+    embed = [":recovery"],
+    deps = [
+        "//internal/db",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
     ],
 )

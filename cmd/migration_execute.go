@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -67,7 +65,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load all migrations from disk
-	migrations, err := loadMigrationsForExecution(afero.NewOsFs())
+	migrations, err := loadMigrations(afero.NewOsFs())
 	if err != nil {
 		return err
 	}
@@ -265,91 +263,6 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-// loadMigrationsForExecution loads all migration files from the migrations directory
-// and returns them with checksums computed
-func loadMigrationsForExecution(fs afero.Fs) ([]db.Migration, error) {
-	// Read migrations directory
-	entries, err := afero.ReadDir(fs, flags.MigrationDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []db.Migration{}, nil
-		}
-		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
-	}
-
-	// Filter and sort migration directories
-	var migrationDirs []string
-	for _, entry := range entries {
-		// Skip schema.sql and non-directories
-		if !entry.IsDir() {
-			continue
-		}
-
-		// Migration directories should have the format: YYYYMMDDHHMMSS_name
-		name := entry.Name()
-		if len(name) >= 14 {
-			migrationDirs = append(migrationDirs, name)
-		}
-	}
-
-	// Sort by timestamp (directory name starts with timestamp)
-	sort.Strings(migrationDirs)
-
-	// Read migration.sql from each directory
-	var allMigrations []db.Migration
-	for _, dir := range migrationDirs {
-		migrationFile := filepath.Join(flags.MigrationDir, dir, "migration.sql")
-
-		// Check if migration.sql exists
-		exists, err := afero.Exists(fs, migrationFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check migration file %s: %w", migrationFile, err)
-		}
-		if !exists {
-			continue
-		}
-
-		// Read migration.sql content
-		content, err := afero.ReadFile(fs, migrationFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read migration file %s: %w", migrationFile, err)
-		}
-
-		sql := string(content)
-		checksum := computeChecksum(sql)
-
-		// Parse header and determine mode
-		mode := db.MigrationModeSync
-		header, headerErr := migrationpkg.ParseHeader(sql)
-		if headerErr != nil {
-			fmt.Println(ui.Warning(fmt.Sprintf("Invalid header in %s: %v (defaulting to sync)", dir, headerErr)))
-		}
-		if header != nil {
-			mode = string(header.Mode)
-		}
-
-		// Strip header from SQL before execution
-		strippedSQL := migrationpkg.StripHeader(sql)
-
-		// Collect depends_on from header
-		var dependsOn []string
-		if header != nil && len(header.DependsOn) > 0 {
-			dependsOn = header.DependsOn
-		}
-
-		// Add the migration
-		allMigrations = append(allMigrations, db.Migration{
-			Name:      dir,
-			SQL:       strippedSQL,
-			Checksum:  checksum,
-			Mode:      mode,
-			DependsOn: dependsOn,
-		})
-	}
-
-	return allMigrations, nil
 }
 
 // computeChecksum computes the SHA-256 checksum of a migration's SQL content.

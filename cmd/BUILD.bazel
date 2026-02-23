@@ -52,6 +52,7 @@ go_test(
         "debug_test.go",
         "generate_enums_test.go",
         "lint_test.go",
+        "migration_execute_test.go",
         "migration_test.go",
         "push_test.go",
     ],

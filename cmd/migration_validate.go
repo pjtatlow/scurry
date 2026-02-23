@@ -13,6 +13,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -21,11 +22,6 @@ var (
 	validateOverwrite    bool
 	validateNoCheckpoint bool
 )
-
-type migration struct {
-	name string
-	sql  string
-}
 
 var migrationValidateCmd = &cobra.Command{
 	Use:   "validate",
@@ -192,11 +188,16 @@ func doMigrationValidate(ctx context.Context) error {
 	return nil
 }
 
-// loadMigrations loads all migration files from the migrations directory in order
-func loadMigrations(fs afero.Fs) ([]migration, error) {
+// loadMigrations loads all migration files from the migrations directory in order.
+// Headers are parsed for mode/depends_on and stripped from the SQL content.
+// Checksums are computed on the header-stripped SQL.
+func loadMigrations(fs afero.Fs) ([]db.Migration, error) {
 	// Read migrations directory
 	entries, err := afero.ReadDir(fs, flags.MigrationDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []db.Migration{}, nil
+		}
 		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
 	}
 
@@ -219,7 +220,7 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 	sort.Strings(migrationDirs)
 
 	// Read migration.sql from each directory
-	var allMigrations []migration
+	var allMigrations []db.Migration
 	for _, dir := range migrationDirs {
 		migrationFile := filepath.Join(flags.MigrationDir, dir, "migration.sql")
 
@@ -232,18 +233,40 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 			continue
 		}
 
-		// Read migration.sql as a single string
-		// Don't parse it - migrations can contain ALTER statements and other DDL
-		// that the schema parser doesn't support
+		// Read migration.sql content
 		content, err := afero.ReadFile(fs, migrationFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read migration file %s: %w", migrationFile, err)
 		}
 
-		// Add the migration with its name and content
-		allMigrations = append(allMigrations, migration{
-			name: dir,
-			sql:  string(content),
+		sql := string(content)
+		checksum := computeChecksum(sql)
+
+		// Parse header and determine mode
+		mode := db.MigrationModeSync
+		header, headerErr := migrationpkg.ParseHeader(sql)
+		if headerErr != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Invalid header in %s: %v (defaulting to sync)", dir, headerErr)))
+		}
+		if header != nil {
+			mode = string(header.Mode)
+		}
+
+		// Strip header from SQL before execution
+		strippedSQL := migrationpkg.StripHeader(sql)
+
+		// Collect depends_on from header
+		var dependsOn []string
+		if header != nil && len(header.DependsOn) > 0 {
+			dependsOn = header.DependsOn
+		}
+
+		allMigrations = append(allMigrations, db.Migration{
+			Name:      dir,
+			SQL:       strippedSQL,
+			Checksum:  checksum,
+			Mode:      mode,
+			DependsOn: dependsOn,
 		})
 	}
 
@@ -252,7 +275,7 @@ func loadMigrations(fs afero.Fs) ([]migration, error) {
 
 // applyMigrationsToCleanDatabase creates a clean shadow database and applies all migrations
 // It uses checkpoints to optimize validation when available
-func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration, showProgress bool) (*schema.Schema, error) {
+func applyMigrationsToCleanDatabase(ctx context.Context, migrations []db.Migration, showProgress bool) (*schema.Schema, error) {
 	fs := afero.NewOsFs()
 
 	// Try to find a valid checkpoint to skip some migrations
@@ -312,15 +335,15 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 	for i := startIndex; i < len(migrations); i++ {
 		mig := migrations[i]
 		if showProgress {
-			fmt.Println(ui.Subtle(fmt.Sprintf("  Applying migration %d/%d: %s", i+1, len(migrations), mig.name)))
+			fmt.Println(ui.Subtle(fmt.Sprintf("  Applying migration %d/%d: %s", i+1, len(migrations), mig.Name)))
 		}
 
 		start := time.Now()
-		err = client.ExecuteBulkDDL(ctx, mig.sql)
+		err = client.ExecuteBulkDDL(ctx, mig.SQL)
 		duration := time.Since(start)
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to apply migration %s: %w", mig.name, err)
+			return nil, fmt.Errorf("failed to apply migration %s: %w", mig.Name, err)
 		}
 
 		if showProgress {
@@ -333,20 +356,20 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []migration,
 }
 
 // ensureCheckpointForLastMigration creates a checkpoint for the last migration if one doesn't exist
-func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resultSchema *schema.Schema, showProgress bool) error {
+func ensureCheckpointForLastMigration(fs afero.Fs, migrations []db.Migration, resultSchema *schema.Schema, showProgress bool) error {
 	if len(migrations) == 0 {
 		return nil
 	}
 
 	lastMigration := migrations[len(migrations)-1]
-	migrationDir := filepath.Join(flags.MigrationDir, lastMigration.name)
+	migrationDir := filepath.Join(flags.MigrationDir, lastMigration.Name)
 
 	// Check if checkpoint already exists
 	checkpoint, err := loadCheckpoint(fs, migrationDir)
 	if err != nil {
 		// Error loading checkpoint, try to create a new one
 		if showProgress {
-			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint error for %s, regenerating...", lastMigration.name)))
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint error for %s, regenerating...", lastMigration.Name)))
 		}
 	} else if checkpoint != nil {
 		// Checkpoint exists, validate it
@@ -359,12 +382,12 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []migration, resul
 		}
 		// Checkpoint exists but is invalid, regenerate it
 		if showProgress {
-			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint invalid for %s, regenerating...", lastMigration.name)))
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Checkpoint invalid for %s, regenerating...", lastMigration.Name)))
 		}
 	} else {
 		// No checkpoint exists
 		if showProgress {
-			fmt.Println(ui.Subtle(fmt.Sprintf("→ Creating checkpoint for %s...", lastMigration.name)))
+			fmt.Println(ui.Subtle(fmt.Sprintf("→ Creating checkpoint for %s...", lastMigration.Name)))
 		}
 	}
 
