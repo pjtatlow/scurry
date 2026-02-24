@@ -14,8 +14,7 @@ const (
 
 // TableInfo holds size information for a single table
 type TableInfo struct {
-	Rows      int64 `yaml:"rows"`
-	SizeBytes int64 `yaml:"size_bytes"`
+	Rows int64 `yaml:"rows"`
 }
 
 // TableSizes holds table size data loaded from table_sizes.yaml

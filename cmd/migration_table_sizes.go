@@ -69,8 +69,7 @@ func doMigrationStatPull(ctx context.Context) error {
 	for _, t := range tableSizes {
 		qualifiedName := fmt.Sprintf("%s.%s", t.SchemaName, t.TableName)
 		ts.Tables[qualifiedName] = migrationpkg.TableInfo{
-			Rows:      t.Rows,
-			SizeBytes: t.SizeBytes,
+			Rows: t.Rows,
 		}
 	}
 

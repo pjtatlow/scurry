@@ -25,16 +25,14 @@ func TestLoadTableSizes(t *testing.T) {
 tables:
   public.posts:
     rows: 15000000
-    size_bytes: 2300000000
   public.users:
     rows: 500000
-    size_bytes: 150000000
 `,
 			want: &TableSizes{
 				Threshold: 100000,
 				Tables: map[string]TableInfo{
-					"public.posts": {Rows: 15000000, SizeBytes: 2300000000},
-					"public.users": {Rows: 500000, SizeBytes: 150000000},
+					"public.posts": {Rows: 15000000},
+					"public.users": {Rows: 500000},
 				},
 			},
 		},
@@ -88,7 +86,7 @@ func TestSaveTableSizes(t *testing.T) {
 	ts := &TableSizes{
 		Threshold: 50000,
 		Tables: map[string]TableInfo{
-			"public.users": {Rows: 100000, SizeBytes: 500000},
+			"public.users": {Rows: 100000},
 		},
 	}
 
