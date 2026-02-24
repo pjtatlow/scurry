@@ -157,7 +157,7 @@ func TestCreateMigration(t *testing.T) {
 		"CREATE INDEX title_idx ON posts (title)",
 	}
 
-	migrationName, err := createMigration(fs, "add_posts_table", statements)
+	migrationName, migrationContent, err := createMigration(fs, "add_posts_table", statements, nil)
 	require.NoError(t, err)
 
 	// Verify migration name format (timestamp_name)
@@ -178,6 +178,9 @@ func TestCreateMigration(t *testing.T) {
 	contentStr := string(content)
 	assert.Contains(t, contentStr, "CREATE TABLE posts")
 	assert.Contains(t, contentStr, "CREATE INDEX title_idx")
+
+	// Verify the returned content matches what was written to file
+	assert.Equal(t, contentStr, migrationContent)
 }
 
 func TestApplyMigrationsToSchema(t *testing.T) {
@@ -307,7 +310,7 @@ func TestMigrateGenIntegration(t *testing.T) {
 	assert.NotEmpty(t, statements)
 
 	// Create migration
-	migrationName, err := createMigration(fs, "add_users_table", statements)
+	migrationName, _, err := createMigration(fs, "add_users_table", statements, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, migrationName)
 

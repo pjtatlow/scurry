@@ -9,31 +9,32 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
 )
 
 func TestComputeMigrationsHash(t *testing.T) {
 	tests := []struct {
 		name       string
-		migrations []migration
+		migrations []db.Migration
 		wantHash   string // only set for cases where we know the exact hash
 	}{
 		{
 			name:       "empty migrations",
-			migrations: []migration{},
+			migrations: []db.Migration{},
 			wantHash:   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", // SHA256 of empty string
 		},
 		{
 			name: "single migration",
-			migrations: []migration{
-				{name: "001_init", sql: "CREATE TABLE users (id INT PRIMARY KEY);"},
+			migrations: []db.Migration{
+				{Name: "001_init", SQL: "CREATE TABLE users (id INT PRIMARY KEY);"},
 			},
 		},
 		{
 			name: "multiple migrations concatenated",
-			migrations: []migration{
-				{name: "001_init", sql: "CREATE TABLE users (id INT);"},
-				{name: "002_add_col", sql: "ALTER TABLE users ADD COLUMN name TEXT;"},
+			migrations: []db.Migration{
+				{Name: "001_init", SQL: "CREATE TABLE users (id INT);"},
+				{Name: "002_add_col", SQL: "ALTER TABLE users ADD COLUMN name TEXT;"},
 			},
 		},
 	}
@@ -56,13 +57,67 @@ func TestComputeMigrationsHash(t *testing.T) {
 
 func TestComputeMigrationsHashDifferentContent(t *testing.T) {
 	// Verify different content produces different hashes
-	migrations1 := []migration{{name: "001", sql: "CREATE TABLE a (id INT);"}}
-	migrations2 := []migration{{name: "001", sql: "CREATE TABLE b (id INT);"}}
+	migrations1 := []db.Migration{{Name: "001", SQL: "CREATE TABLE a (id INT);"}}
+	migrations2 := []db.Migration{{Name: "001", SQL: "CREATE TABLE b (id INT);"}}
 
 	hash1 := computeMigrationsHash(migrations1)
 	hash2 := computeMigrationsHash(migrations2)
 
 	assert.NotEqual(t, hash1, hash2, "different content should produce different hashes")
+}
+
+func TestComputeMigrationsHashStripsHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		sql1 string
+		sql2 string
+	}{
+		{
+			name: "header vs no header",
+			sql1: "CREATE TABLE users (id INT PRIMARY KEY);",
+			sql2: "-- scurry:mode=sync\nCREATE TABLE users (id INT PRIMARY KEY);",
+		},
+		{
+			name: "different headers same SQL",
+			sql1: "-- scurry:mode=sync\nCREATE TABLE users (id INT PRIMARY KEY);",
+			sql2: "-- scurry:mode=async,depends_on=foo\nCREATE TABLE users (id INT PRIMARY KEY);",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash1 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: tt.sql1}})
+			hash2 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: tt.sql2}})
+			assert.Equal(t, hash1, hash2, "header changes should not affect migrations hash")
+		})
+	}
+}
+
+func TestComputeChecksumStripsHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		sql1 string
+		sql2 string
+	}{
+		{
+			name: "header vs no header",
+			sql1: "ALTER TABLE users ADD COLUMN name TEXT;",
+			sql2: "-- scurry:mode=async\nALTER TABLE users ADD COLUMN name TEXT;",
+		},
+		{
+			name: "different headers same SQL",
+			sql1: "-- scurry:mode=sync\nALTER TABLE users ADD COLUMN name TEXT;",
+			sql2: "-- scurry:mode=async,depends_on=foo;bar\nALTER TABLE users ADD COLUMN name TEXT;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checksum1 := computeChecksum(tt.sql1)
+			checksum2 := computeChecksum(tt.sql2)
+			assert.Equal(t, checksum1, checksum2, "header changes should not affect checksum")
+		})
+	}
 }
 
 func TestComputeContentHash(t *testing.T) {
@@ -313,17 +368,17 @@ func TestFindLatestValidCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create some migrations
-	migrations := []migration{
-		{name: "20240101000000_init", sql: "CREATE TABLE users (id INT PRIMARY KEY);"},
-		{name: "20240102000000_add_col", sql: "ALTER TABLE users ADD COLUMN name TEXT;"},
+	migrations := []db.Migration{
+		{Name: "20240101000000_init", SQL: "CREATE TABLE users (id INT PRIMARY KEY);"},
+		{Name: "20240102000000_add_col", SQL: "ALTER TABLE users ADD COLUMN name TEXT;"},
 	}
 
 	for _, mig := range migrations {
-		migDir := filepath.Join(flags.MigrationDir, mig.name)
+		migDir := filepath.Join(flags.MigrationDir, mig.Name)
 		err := fs.MkdirAll(migDir, 0755)
 		require.NoError(t, err)
 
-		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.sql), 0644)
+		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.SQL), 0644)
 		require.NoError(t, err)
 	}
 
@@ -333,7 +388,7 @@ func TestFindLatestValidCheckpoint(t *testing.T) {
 	contentHash := computeContentHash(schemaContent)
 	checkpointContent := formatCheckpointHeader(migrationsHash, contentHash) + "\n" + schemaContent
 
-	checkpointPath := filepath.Join(flags.MigrationDir, migrations[0].name, checkpointFileName)
+	checkpointPath := filepath.Join(flags.MigrationDir, migrations[0].Name, checkpointFileName)
 	err = afero.WriteFile(fs, checkpointPath, []byte(checkpointContent), 0644)
 	require.NoError(t, err)
 
@@ -356,17 +411,17 @@ func TestFindLatestValidCheckpointWithInvalidMigrationsHash(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create migrations
-	migrations := []migration{
-		{name: "20240101000000_init", sql: "CREATE TABLE users (id INT PRIMARY KEY);"},
-		{name: "20240102000000_add_col", sql: "ALTER TABLE users ADD COLUMN name TEXT;"},
+	migrations := []db.Migration{
+		{Name: "20240101000000_init", SQL: "CREATE TABLE users (id INT PRIMARY KEY);"},
+		{Name: "20240102000000_add_col", SQL: "ALTER TABLE users ADD COLUMN name TEXT;"},
 	}
 
 	for _, mig := range migrations {
-		migDir := filepath.Join(flags.MigrationDir, mig.name)
+		migDir := filepath.Join(flags.MigrationDir, mig.Name)
 		err := fs.MkdirAll(migDir, 0755)
 		require.NoError(t, err)
 
-		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.sql), 0644)
+		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.SQL), 0644)
 		require.NoError(t, err)
 	}
 
@@ -376,7 +431,7 @@ func TestFindLatestValidCheckpointWithInvalidMigrationsHash(t *testing.T) {
 	contentHash := computeContentHash(schemaContent)
 	checkpointContent := formatCheckpointHeader(wrongHash, contentHash) + "\n" + schemaContent
 
-	checkpointPath := filepath.Join(flags.MigrationDir, migrations[0].name, checkpointFileName)
+	checkpointPath := filepath.Join(flags.MigrationDir, migrations[0].Name, checkpointFileName)
 	err = afero.WriteFile(fs, checkpointPath, []byte(checkpointContent), 0644)
 	require.NoError(t, err)
 
@@ -425,8 +480,8 @@ func TestCreateCheckpointForMigration(t *testing.T) {
 	err = fs.MkdirAll(migDir, 0755)
 	require.NoError(t, err)
 
-	migrations := []migration{
-		{name: "20240101000000_test", sql: "CREATE TABLE users (id INT PRIMARY KEY);"},
+	migrations := []db.Migration{
+		{Name: "20240101000000_test", SQL: "CREATE TABLE users (id INT PRIMARY KEY);"},
 	}
 
 	// Apply migration to get schema
@@ -466,16 +521,16 @@ func TestRoundTripCheckpoint(t *testing.T) {
 	err := fs.MkdirAll(flags.MigrationDir, 0755)
 	require.NoError(t, err)
 
-	migrations := []migration{
-		{name: "20240101000000_users", sql: "CREATE TABLE users (id INT PRIMARY KEY, name TEXT);"},
-		{name: "20240102000000_posts", sql: "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id));"},
+	migrations := []db.Migration{
+		{Name: "20240101000000_users", SQL: "CREATE TABLE users (id INT PRIMARY KEY, name TEXT);"},
+		{Name: "20240102000000_posts", SQL: "CREATE TABLE posts (id INT PRIMARY KEY, user_id INT REFERENCES users(id));"},
 	}
 
 	for _, mig := range migrations {
-		migDir := filepath.Join(flags.MigrationDir, mig.name)
+		migDir := filepath.Join(flags.MigrationDir, mig.Name)
 		err := fs.MkdirAll(migDir, 0755)
 		require.NoError(t, err)
-		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.sql), 0644)
+		err = afero.WriteFile(fs, filepath.Join(migDir, "migration.sql"), []byte(mig.SQL), 0644)
 		require.NoError(t, err)
 	}
 
@@ -484,7 +539,7 @@ func TestRoundTripCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create checkpoint for second migration
-	migDir := filepath.Join(flags.MigrationDir, migrations[1].name)
+	migDir := filepath.Join(flags.MigrationDir, migrations[1].Name)
 	err = createCheckpointForMigration(fs, migrations, resultSchema, migDir)
 	require.NoError(t, err)
 
@@ -493,7 +548,7 @@ func TestRoundTripCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, checkpoint)
 	assert.Equal(t, 1, index)
-	assert.Equal(t, migrations[1].name, checkpoint.MigrationName)
+	assert.Equal(t, migrations[1].Name, checkpoint.MigrationName)
 
 	// Verify content hash is valid
 	err = validateCheckpoint(checkpoint)

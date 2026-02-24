@@ -36,6 +36,9 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	dropStatements := make(dependencyMap)
 	originalDependencies := make(map[*migrationStatement]set.Set[string])
 
+	// Map to track warnings for each migration statement
+	statementWarnings := make(map[*migrationStatement]string)
+
 	// Dropping the schema has to come last, save them for the end
 	dropSchemaStmts := make([]*migrationStatement, 0)
 	for _, difference := range r.Differences {
@@ -52,6 +55,11 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		stmt := &migrationStatement{
 			stmts:    difference.MigrationStatements,
 			requires: set.New[*migrationStatement](),
+		}
+
+		// Store warning for this statement if it exists
+		if difference.WarningMessage != "" {
+			statementWarnings[stmt] = difference.WarningMessage
 		}
 
 		// Check if this is a drop schema statement (they go last)
@@ -109,7 +117,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	// Collect all of the names provided by each statement group, so as we explore dependencies we can connect statements together.
 	for _, migration := range statements {
 		for _, ddl := range migration.stmts {
-			for name := range getProvidedNames(ddl).Values() {
+			for name := range GetProvidedNames(ddl, true).Values() {
 				providers.add(name, migration)
 			}
 		}
@@ -119,7 +127,7 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 	// If we don't have a provider for a requirement, we will assume it is already present or a builtin.
 	for _, migration := range statements {
 		for _, ddl := range migration.stmts {
-			for name := range getDependencyNames(ddl).Values() {
+			for name := range GetDependencyNames(ddl, true).Values() {
 				if others, ok := providers[name]; ok {
 					for other := range others.Values() {
 						// Don't add self-references - a group can't depend on itself
@@ -191,6 +199,15 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		return strings.Compare(a.stmts[0].String(), b.stmts[0].String())
 	})
 
+	// Build a map to track which tree.Statement belongs to which migrationStatement
+	// This lets us identify the first statement of each migration group
+	stmtToMigration := make(map[tree.Statement]*migrationStatement)
+	for _, migration := range orderedStatements {
+		if len(migration.stmts) > 0 {
+			stmtToMigration[migration.stmts[0]] = migration
+		}
+	}
+
 	// Flatten all statements from each group, preserving their order
 	allStatements := make([]tree.Statement, 0)
 	for _, migration := range orderedStatements {
@@ -220,6 +237,17 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		} else {
 			s = stmt.String()
 		}
+
+		// If this is the first statement of a migration group with a warning, prepend the warning comment
+		if migration, isFirst := stmtToMigration[stmt]; isFirst {
+			if warning, hasWarning := statementWarnings[migration]; hasWarning {
+				warningComment := formatWarningComment(warning)
+				if warningComment != "" {
+					s = warningComment + "\n" + s
+				}
+			}
+		}
+
 		ddl = append(ddl, s)
 	}
 	return ddl, warnings, nil
@@ -251,6 +279,20 @@ func exploreDeps(migration *migrationStatement, pending set.Set[*migrationStatem
 	result.Add(migration)
 
 	return result, nil
+}
+
+func formatWarningComment(warning string) string {
+	if warning == "" {
+		return ""
+	}
+	lines := strings.Split(warning, "\n")
+	var commentLines []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			commentLines = append(commentLines, "-- WARNING: "+line)
+		}
+	}
+	return strings.Join(commentLines, "\n")
 }
 
 func isCommitBegin(stmts []tree.Statement) bool {

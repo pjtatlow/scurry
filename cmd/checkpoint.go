@@ -13,6 +13,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -49,10 +50,11 @@ func init() {
 
 // computeMigrationsHash computes SHA-256 of concatenated migration contents
 // migrations must be sorted by name (timestamp order)
-func computeMigrationsHash(migrations []migration) string {
+// Headers are stripped before hashing so that header-only edits don't change the hash.
+func computeMigrationsHash(migrations []db.Migration) string {
 	var combined strings.Builder
 	for _, m := range migrations {
-		combined.WriteString(m.sql)
+		combined.WriteString(migrationpkg.StripHeader(m.SQL))
 	}
 	hash := sha256.Sum256([]byte(combined.String()))
 	return fmt.Sprintf("%x", hash)
@@ -170,7 +172,7 @@ func writeCheckpoint(fs afero.Fs, migrationDir string, content string) error {
 
 // createCheckpointForMigration creates checkpoint.sql for a specific migration
 // migrationsUpTo should be sorted and include all migrations up to and including target
-func createCheckpointForMigration(fs afero.Fs, migrationsUpTo []migration, resultSchema *schema.Schema, targetMigrationDir string) error {
+func createCheckpointForMigration(fs afero.Fs, migrationsUpTo []db.Migration, resultSchema *schema.Schema, targetMigrationDir string) error {
 	migrationsHash := computeMigrationsHash(migrationsUpTo)
 	content, err := generateCheckpointContent(resultSchema, migrationsHash)
 	if err != nil {
@@ -193,10 +195,10 @@ func validateCheckpoint(checkpoint *Checkpoint) error {
 // findLatestValidCheckpoint finds the most recent valid checkpoint
 // Returns the checkpoint, its index in allMigrations, and any error
 // Returns nil, -1, nil if no valid checkpoint found
-func findLatestValidCheckpoint(fs afero.Fs, allMigrations []migration) (*Checkpoint, int, error) {
+func findLatestValidCheckpoint(fs afero.Fs, allMigrations []db.Migration) (*Checkpoint, int, error) {
 	// Iterate from newest to oldest migration
 	for i := len(allMigrations) - 1; i >= 0; i-- {
-		migDir := filepath.Join(flags.MigrationDir, allMigrations[i].name)
+		migDir := filepath.Join(flags.MigrationDir, allMigrations[i].Name)
 		checkpoint, err := loadCheckpoint(fs, migDir)
 		if err != nil {
 			continue // Skip invalid checkpoints
@@ -257,29 +259,29 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 
 	// Apply migrations one by one and generate checkpoints
 	for i, mig := range migrations {
-		fmt.Printf("Processing %s (%d/%d)...\n", mig.name, i+1, len(migrations))
+		fmt.Printf("Processing %s (%d/%d)...\n", mig.Name, i+1, len(migrations))
 
 		start := time.Now()
 
 		// Apply this migration
-		err = client.ExecuteBulkDDL(ctx, mig.sql)
+		err = client.ExecuteBulkDDL(ctx, mig.SQL)
 		if err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", mig.name, err)
+			return fmt.Errorf("failed to apply migration %s: %w", mig.Name, err)
 		}
 
 		// Get current schema state
 		currentSchema, err := schema.LoadFromDatabase(ctx, client)
 		if err != nil {
-			return fmt.Errorf("failed to load schema after %s: %w", mig.name, err)
+			return fmt.Errorf("failed to load schema after %s: %w", mig.Name, err)
 		}
 
 		// Generate checkpoint for this migration
 		migrationsUpTo := migrations[:i+1]
-		migDir := filepath.Join(flags.MigrationDir, mig.name)
+		migDir := filepath.Join(flags.MigrationDir, mig.Name)
 
 		err = createCheckpointForMigration(fs, migrationsUpTo, currentSchema, migDir)
 		if err != nil {
-			return fmt.Errorf("failed to create checkpoint for %s: %w", mig.name, err)
+			return fmt.Errorf("failed to create checkpoint for %s: %w", mig.Name, err)
 		}
 
 		duration := time.Since(start)

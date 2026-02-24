@@ -12,6 +12,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 )
 
@@ -105,7 +106,8 @@ func dumpProductionSchema(ctx context.Context, fs afero.Fs, sch *schema.Schema) 
 }
 
 // Helper function to create migration directory and file
-func createMigration(fs afero.Fs, name string, statements []string) (string, error) {
+// Returns the migration directory name and the content written to migration.sql
+func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
 	// Generate timestamp prefix
 	timestamp := time.Now().Format("20060102150405")
 	migrationName := fmt.Sprintf("%s_%s", timestamp, name)
@@ -114,18 +116,21 @@ func createMigration(fs afero.Fs, name string, statements []string) (string, err
 	// Create migration directory
 	err := fs.MkdirAll(migrationPath, 0755)
 	if err != nil {
-		return "", fmt.Errorf("failed to create migration directory: %w", err)
+		return "", "", fmt.Errorf("failed to create migration directory: %w", err)
 	}
 
 	// Write migration.sql
 	migrationFile := filepath.Join(migrationPath, "migration.sql")
 	content := strings.Join(statements, ";\n\n") + ";\n"
+	if header != nil {
+		content = migrationpkg.FormatHeader(header) + "\n" + content
+	}
 	err = afero.WriteFile(fs, migrationFile, []byte(content), 0644)
 	if err != nil {
-		return "", fmt.Errorf("failed to write migration.sql: %w", err)
+		return "", "", fmt.Errorf("failed to write migration.sql: %w", err)
 	}
 
-	return migrationName, nil
+	return migrationName, content, nil
 }
 
 // Helper function to apply migrations to production schema
@@ -138,7 +143,13 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 	}
 	defer client.Close()
 
-	client.ExecuteBulkDDL(ctx, migrations...)
+	// Keep autocommit_before_ddl enabled (production behavior) so we catch
+	// migrations that would fail due to transaction boundary issues.
+	client.SetDisableAutocommitDDL(false)
+
+	if err := client.ExecuteBulkDDL(ctx, migrations...); err != nil {
+		return nil, err
+	}
 
 	// Get the new schema from the database
 	return schema.LoadFromDatabase(ctx, client)

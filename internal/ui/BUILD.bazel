@@ -11,5 +11,6 @@ go_library(
         "@com_github_alecthomas_chroma_v2//styles",
         "@com_github_charmbracelet_huh//:huh",
         "@com_github_charmbracelet_lipgloss//:lipgloss",
+        "@com_github_mattn_go_isatty//:go-isatty",
     ],
 )

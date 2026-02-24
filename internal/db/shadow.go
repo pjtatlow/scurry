@@ -132,10 +132,15 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("failed to connect to test server: %w", err)
 	}
 	client.isShadow = true
+	client.disableAutocommitDDL = true
 
 	// Shadow databases are ephemeral and don't benefit from schema_locked.
 	// Disable it so tables can be freely modified without unlock overhead.
 	_, _ = client.db.ExecContext(ctx, "SET create_table_with_schema_locked = false")
+
+	// Newer CockroachDB versions restrict access to crdb_internal by default.
+	// We need it for InitMigrationHistory's schema introspection.
+	_, _ = client.db.ExecContext(ctx, "SET allow_unsafe_internals = true")
 
 	return client, nil
 }

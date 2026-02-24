@@ -270,7 +270,47 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	fmt.Println(ui.Info("⟳ Applying migrations..."))
 
 	if err := opts.DbClient.ExecuteBulkDDL(ctx, statements...); err != nil {
-		return nil, fmt.Errorf("%s: %w", ui.Error("✗ Failed to apply migrations"), err)
+		fmt.Println()
+		fmt.Println(ui.Warning("⚠ Bulk apply failed, retrying statements one-by-one to identify the failure..."))
+		fmt.Println()
+
+		// Re-load remote schema to capture any partial progress
+		retryRemoteSchema, reloadErr := schema.LoadFromDatabase(ctx, opts.DbClient)
+		if reloadErr != nil {
+			return nil, fmt.Errorf("%s: %w (additionally, failed to reload schema for retry: %s)", ui.Error("✗ Failed to apply migrations"), err, reloadErr)
+		}
+
+		// Re-compare with local schema
+		retryDiff := schema.Compare(localSchema, retryRemoteSchema)
+		if !retryDiff.HasChanges() {
+			fmt.Println(ui.Warning("⚠ Despite the error, all changes appear to have been applied."))
+			fmt.Println(ui.Subtle(fmt.Sprintf("  Original error: %s", err)))
+			return &PushResult{HasChanges: true, Statements: statements}, nil
+		}
+
+		// Re-generate migration statements from the current state
+		retryStatements, _, genErr := retryDiff.GenerateMigrations(true)
+		if genErr != nil {
+			return nil, fmt.Errorf("%s: %w (additionally, failed to regenerate migrations for retry: %s)", ui.Error("✗ Failed to apply migrations"), err, genErr)
+		}
+
+		fmt.Println(ui.Info(fmt.Sprintf("⟳ Retrying %d remaining statement(s) individually:", len(retryStatements))))
+		fmt.Println()
+
+		for i, stmt := range retryStatements {
+			fmt.Printf("%s %s\n", ui.Info(fmt.Sprintf("%d/%d:", i+1, len(retryStatements))), ui.SqlCode(stmt))
+			if stmtErr := opts.DbClient.ExecuteBulkDDL(ctx, stmt); stmtErr != nil {
+				fmt.Println()
+				fmt.Println(ui.Error(fmt.Sprintf("✗ Statement %d failed:", i+1)))
+				fmt.Println(ui.SqlCode(stmt))
+				return nil, fmt.Errorf("%s: %w", ui.Error("✗ Failed to apply migrations"), stmtErr)
+			}
+			fmt.Println(ui.Success(fmt.Sprintf("  ✓ Statement %d applied", i+1)))
+			fmt.Println()
+		}
+
+		fmt.Println(ui.Success("✓ All remaining statements applied individually."))
+		return &PushResult{HasChanges: true, Statements: statements}, nil
 	}
 
 	fmt.Println()

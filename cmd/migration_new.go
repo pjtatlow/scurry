@@ -40,6 +40,11 @@ func migrationNew(cmd *cobra.Command, args []string) error {
 }
 
 func doMigrationNew(ctx context.Context) error {
+	// Check for interactive terminal
+	if !ui.IsInteractive() {
+		return fmt.Errorf("migration new requires an interactive terminal\nRun this command in a terminal with TTY support")
+	}
+
 	fs := afero.NewOsFs()
 
 	// Validate migrations directory
@@ -138,7 +143,7 @@ func doMigrationNew(ctx context.Context) error {
 	// Create migration directory and file
 	fmt.Println(ui.Subtle("→ Creating migration..."))
 
-	migrationDirName, err := createMigration(fs, migrationName, statementStrings)
+	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
@@ -155,6 +160,7 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
 	fmt.Println()
 	fmt.Println(ui.Info(("Migration created successfully!")))
 

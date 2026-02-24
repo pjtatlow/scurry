@@ -9,6 +9,7 @@ require (
 	github.com/cockroachdb/cockroach-go/v2 v2.4.2
 	github.com/cockroachdb/cockroachdb-parser v0.25.2
 	github.com/lib/pq v1.10.9
+	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/afero v1.15.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
@@ -57,7 +58,6 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect

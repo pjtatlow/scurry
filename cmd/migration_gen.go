@@ -14,6 +14,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -151,7 +152,66 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
 	if err != nil {
-		return fmt.Errorf("failed to apply migrations to schema: %w", err)
+		// Migration failed to apply - prompt user to create a manual migration
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to apply generated migration: %v", err)))
+		fmt.Println()
+		fmt.Println(ui.Info("The generated migration could not be applied. This may require manual intervention."))
+
+		confirmed, confirmErr := ui.ConfirmPrompt("Would you like to create a manual migration instead?")
+		if confirmErr != nil {
+			return fmt.Errorf("confirmation prompt failed: %w", confirmErr)
+		}
+
+		if !confirmed {
+			return fmt.Errorf("failed to apply migrations to schema: %w", err)
+		}
+
+		// Pre-populate with the generated statements
+		sqlStatements := strings.Join(statements, ";\n\n") + ";"
+
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewText().
+					Title("SQL Statements").
+					Description("Edit the SQL statements to fix the migration issue").
+					Placeholder("CREATE TABLE example (\n  id INT PRIMARY KEY\n);").
+					Value(&sqlStatements).
+					CharLimit(10000).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("SQL statements cannot be empty")
+						}
+						// Validate SQL
+						_, err := parser.Parse(s)
+						if err != nil {
+							return fmt.Errorf("failed to parse SQL: %w", err)
+						}
+						return nil
+					}),
+			),
+		).WithTheme(ui.HuhTheme())
+
+		if err := form.Run(); err != nil {
+			return fmt.Errorf("migration input canceled: %w", err)
+		}
+
+		// Parse edited statements
+		parsedStatements, err := parser.Parse(sqlStatements)
+		if err != nil {
+			return fmt.Errorf("failed to parse SQL: %w", err)
+		}
+
+		// Convert parsed statements to strings
+		statements = nil
+		for _, stmt := range parsedStatements {
+			statements = append(statements, stmt.AST.String())
+		}
+
+		// Try to apply the edited migration
+		newSchema, err = applyMigrationsToSchema(ctx, prodSchema, statements)
+		if err != nil {
+			return fmt.Errorf("failed to apply edited migrations to schema: %w", err)
+		}
 	}
 
 	// 5. Get migration name (from flag or prompt)
@@ -160,6 +220,10 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		// Use the name from the flag
 		name = migrationName
 	} else {
+		// Check for interactive terminal when prompting for name
+		if !ui.IsInteractive() {
+			return fmt.Errorf("migration name required in non-interactive mode\nUse --name flag to specify the migration name")
+		}
 		// Ask user for migration name
 		form := huh.NewForm(
 			huh.NewGroup(
@@ -183,13 +247,54 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		}
 	}
 
+	// Classify migration as sync or async
+	tableSizes, err := migrationpkg.LoadTableSizes(fs, flags.MigrationDir)
+	if err != nil {
+		return fmt.Errorf("failed to load table_sizes.yaml: %w", err)
+	}
+
+	classifyResult := migrationpkg.ClassifyDifferences(diffResult.Differences, tableSizes)
+
+	if classifyResult.Mode == migrationpkg.ModeAsync {
+		fmt.Println()
+		fmt.Println(ui.Warning("Migration classified as async:"))
+		for _, reason := range classifyResult.Reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+		fmt.Println()
+	}
+
+	// Build header with mode and smart dependency detection
+	header := &migrationpkg.Header{Mode: classifyResult.Mode}
+
+	// Parse new migration statements for dependency detection
+	var newStmts []tree.Statement
+	for _, s := range statements {
+		parsed, err := parser.Parse(s)
+		if err == nil {
+			for _, p := range parsed {
+				newStmts = append(newStmts, p.AST)
+			}
+		}
+	}
+
+	// Find dependencies based on object-level overlap
+	existingMigrations, err := loadMigrations(fs)
+	if err == nil && len(existingMigrations) > 0 {
+		migInfos := make([]migrationpkg.MigrationInfo, len(existingMigrations))
+		for i, m := range existingMigrations {
+			migInfos[i] = migrationpkg.MigrationInfo{Name: m.Name, SQL: m.SQL}
+		}
+		header.DependsOn = migrationpkg.FindDependencies(newStmts, migInfos)
+	}
+
 	// Create migration directory and file
 	if flags.Verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, err := createMigration(fs, name, statements)
+	migrationDirName, _, err := createMigration(fs, name, statements, header)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
@@ -208,15 +313,22 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Migration created successfully! Apply it to your database with: scurry migration apply %s", migrationDirName)))
+	fmt.Println(ui.Info("Migration created successfully! Apply it to your database with: scurry migration execute"))
 
 	return nil
 }
 
 // promptForUsingExpressionsGen checks for column type changes and prompts the user
 // to optionally provide a USING expression for each one.
+// In non-interactive mode, this is skipped (user can edit the migration file manually).
 func promptForUsingExpressionsGen(diffResult *schema.ComparisonResult) error {
+	// Skip in non-interactive mode
+	if !ui.IsInteractive() {
+		return nil
+	}
+
 	for i := range diffResult.Differences {
 		diff := &diffResult.Differences[i]
 		if diff.Type != schema.DiffTypeColumnTypeChanged {

@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "migration",
+    srcs = [
+        "classify.go",
+        "header.go",
+        "table_sizes.go",
+    ],
+    importpath = "github.com/pjtatlow/scurry/internal/migration",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/schema",
+        "//internal/set",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_spf13_afero//:afero",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_test(
+    name = "migration_test",
+    srcs = [
+        "classify_test.go",
+        "header_test.go",
+        "table_sizes_test.go",
+    ],
+    embed = [":migration"],
+    deps = [
+        "//internal/schema",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/types",
+        "@com_github_spf13_afero//:afero",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

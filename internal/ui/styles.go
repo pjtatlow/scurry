@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -8,6 +10,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-isatty"
 )
 
 var (
@@ -128,6 +131,11 @@ func SqlCode(text string) string {
 	return s.String()
 }
 
+// IsInteractive returns true if stdin is a terminal
+func IsInteractive() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
+}
+
 // HuhTheme returns the custom theme for all huh forms
 // Uses white text and green highlighting for consistency
 func HuhTheme() *huh.Theme {
@@ -164,7 +172,12 @@ func HuhTheme() *huh.Theme {
 
 // ConfirmPrompt displays a yes/no confirmation prompt using huh
 // Returns true if user confirms, false otherwise
+// Returns an error if not running in an interactive terminal
 func ConfirmPrompt(question string) (bool, error) {
+	if !IsInteractive() {
+		return false, fmt.Errorf("confirmation prompt requires an interactive terminal\nRun this command in a terminal with TTY support, or use --force to skip prompts")
+	}
+
 	var confirmed bool
 
 	form := huh.NewForm(
