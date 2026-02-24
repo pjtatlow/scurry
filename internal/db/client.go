@@ -20,7 +20,7 @@ type Client struct {
 	// disableAutocommitDDL controls whether ExecuteBulkDDL sets
 	// autocommit_before_ddl=false inside transactions. This is enabled by
 	// default for shadow databases so multiple DDL statements stay in one
-	// transaction. Callers that need production-like behaviour (e.g.
+	// transaction. Callers that need production-like behavior (e.g.
 	// migration generation) can set this to false.
 	disableAutocommitDDL bool
 }

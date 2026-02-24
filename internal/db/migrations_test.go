@@ -1021,4 +1021,3 @@ func TestSchemaUpgradeAddsAsyncColumn(t *testing.T) {
 	require.NotNil(t, found)
 	assert.True(t, found.Async)
 }
-

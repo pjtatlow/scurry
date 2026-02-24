@@ -170,8 +170,6 @@ func PromptRecoveryOption(config RecoveryPromptConfig) (string, error) {
 // RunRecoveryLoop runs the interactive recovery loop, prompting the user for actions
 // until the migration is recovered or the user aborts.
 func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryResult, error) {
-	failedMigration := config.FailedMigration
-
 	for {
 		choice, err := PromptRecoveryOption(RecoveryPromptConfig{
 			IncludeDropDatabase: config.IncludeDropDatabase,
@@ -187,12 +185,7 @@ func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryRe
 				fmt.Println(ui.Error(fmt.Sprintf("Retry failed: %v", err)))
 				// Allow caller to refresh migration display
 				if config.OnRetryFailure != nil {
-					refreshed, refreshErr := config.OnRetryFailure(ctx, config.DbClient)
-					if refreshErr == nil && refreshed != nil {
-						failedMigration = refreshed
-	
-						config.FailedMigration = failedMigration
-					}
+					config.OnRetryFailure(ctx, config.DbClient)
 				}
 				fmt.Println()
 				continue

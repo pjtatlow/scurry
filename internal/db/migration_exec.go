@@ -72,4 +72,3 @@ func (c *Client) ExecuteMigrationWithTracking(ctx context.Context, migration Mig
 
 	return nil
 }
-
