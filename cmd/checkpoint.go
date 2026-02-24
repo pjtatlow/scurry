@@ -255,6 +255,7 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client.SetDisableAutocommitDDL(false)
 	defer client.Close()
 
 	// Apply migrations one by one and generate checkpoints
