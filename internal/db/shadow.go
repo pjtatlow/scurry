@@ -132,6 +132,7 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("failed to connect to test server: %w", err)
 	}
 	client.isShadow = true
+	client.disableAutocommitDDL = true
 
 	// Shadow databases are ephemeral and don't benefit from schema_locked.
 	// Disable it so tables can be freely modified without unlock overhead.

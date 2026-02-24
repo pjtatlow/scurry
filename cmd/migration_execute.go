@@ -21,6 +21,7 @@ var (
 	executeDryRun           bool
 	executeForce            bool
 	executeIncludeAsync     bool
+	executeAsyncOnly        bool
 	executeStatementTimeout time.Duration
 )
 
@@ -54,7 +55,9 @@ func init() {
 	migrationExecuteCmd.Flags().BoolVar(&executeDryRun, "dry-run", false, "Show what would be executed without applying")
 	migrationExecuteCmd.Flags().BoolVar(&executeForce, "force", false, "Skip confirmation prompt")
 	migrationExecuteCmd.Flags().BoolVar(&executeIncludeAsync, "include-async", false, "Include async migrations in execution")
+	migrationExecuteCmd.Flags().BoolVar(&executeAsyncOnly, "async-only", false, "Execute only async migrations")
 	migrationExecuteCmd.Flags().DurationVar(&executeStatementTimeout, "statement-timeout", 0, "Set statement timeout (e.g., 30s, 5m, 1h)")
+	migrationExecuteCmd.MarkFlagsMutuallyExclusive("include-async", "async-only")
 }
 
 func runMigrationExecute(cmd *cobra.Command, args []string) error {
@@ -135,15 +138,28 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build execution list preserving timestamp order, skipping async unless --include-async
+	// Build execution list preserving timestamp order based on mode flags
 	var migrationsToExecute []db.Migration
 	var skippedAsync []db.Migration
+	var skippedSync []db.Migration
 	for _, m := range unappliedMigrations {
-		if m.Mode == db.MigrationModeAsync && !executeIncludeAsync {
+		if executeAsyncOnly {
+			if m.Mode != db.MigrationModeAsync {
+				skippedSync = append(skippedSync, m)
+				continue
+			}
+		} else if m.Mode == db.MigrationModeAsync && !executeIncludeAsync {
 			skippedAsync = append(skippedAsync, m)
 			continue
 		}
 		migrationsToExecute = append(migrationsToExecute, m)
+	}
+
+	if len(skippedSync) > 0 {
+		fmt.Printf("\n%s\n", ui.Info(fmt.Sprintf("Skipping %d sync migration(s):", len(skippedSync))))
+		for _, m := range skippedSync {
+			fmt.Printf("  - %s\n", m.Name)
+		}
 	}
 
 	if len(skippedAsync) > 0 {
@@ -156,7 +172,11 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 	if len(migrationsToExecute) == 0 {
 		fmt.Println()
-		fmt.Println(ui.Success("No sync migrations to execute"))
+		if executeAsyncOnly {
+			fmt.Println(ui.Success("No async migrations to execute"))
+		} else {
+			fmt.Println(ui.Success("No sync migrations to execute"))
+		}
 		return nil
 	}
 
@@ -256,9 +276,9 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		fmt.Println(ui.Success(fmt.Sprintf("Applied %d migration(s)", executed)))
 	}
 	if skipped > 0 {
-		fmt.Println(ui.Warning(fmt.Sprintf("Skipped %d migration(s) due to unmet dependencies or running async", skipped)))
+		return fmt.Errorf("failed to execute %d migration(s) due to unmet dependencies or running async", skipped)
 	}
-	if skipped == 0 && executed > 0 {
+	if executed > 0 {
 		fmt.Println(ui.Success("All migrations executed successfully!"))
 	}
 

@@ -141,101 +141,37 @@ func TestMarkSucceeded(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	tests := []struct {
-		name         string
-		migrationSQL string
-		setupSQL     string // SQL to run before MarkSucceeded to simulate partial execution
-		failedRecord func() *db.AppliedMigration
-		wantErr      bool
-	}{
-		{
-			name: "with remaining statements to execute",
-			migrationSQL: `
-				CREATE TABLE marksucceeded_remaining_1 (id INT PRIMARY KEY);
-				CREATE TABLE marksucceeded_remaining_2 (id INT PRIMARY KEY);
-				CREATE TABLE marksucceeded_remaining_3 (id INT PRIMARY KEY);
-			`,
-			// Simulate that table 1 was already created, and statement 2 failed
-			setupSQL: "CREATE TABLE marksucceeded_remaining_1 (id INT PRIMARY KEY)",
-			failedRecord: func() *db.AppliedMigration {
-				// The parser normalizes INT to INT8
-				failedStmt := "CREATE TABLE marksucceeded_remaining_2 (id INT8 PRIMARY KEY)"
-				return &db.AppliedMigration{
-					FailedStatement: &failedStmt,
-				}
-			},
-			wantErr: false,
-		},
-		{
-			name:         "without remaining statements - nil failedRecord",
-			migrationSQL: "CREATE TABLE marksucceeded_nil (id INT PRIMARY KEY)",
-			setupSQL:     "CREATE TABLE marksucceeded_nil (id INT PRIMARY KEY)",
-			failedRecord: func() *db.AppliedMigration {
-				return nil
-			},
-			wantErr: false,
-		},
-		{
-			name:         "without remaining statements - empty FailedStatement",
-			migrationSQL: "CREATE TABLE marksucceeded_empty (id INT PRIMARY KEY)",
-			setupSQL:     "CREATE TABLE marksucceeded_empty (id INT PRIMARY KEY)",
-			failedRecord: func() *db.AppliedMigration {
-				empty := ""
-				return &db.AppliedMigration{
-					FailedStatement: &empty,
-				}
-			},
-			wantErr: false,
-		},
+	client, err := db.GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	err = client.InitMigrationHistory(ctx)
+	require.NoError(t, err)
+
+	migrationName := "20240101120000_marksucceeded_test"
+	checksum := "marksucceeded_checksum"
+
+	// Create a failed migration in the database so RecoverMigration can transition it
+	err = client.StartMigration(ctx, migrationName, checksum, false)
+	require.NoError(t, err)
+	err = client.FailMigration(ctx, migrationName, "some statement", "some error")
+	require.NoError(t, err)
+
+	migration := db.Migration{
+		Name:     migrationName,
+		SQL:      "CREATE TABLE marksucceeded_test (id INT PRIMARY KEY)",
+		Checksum: checksum,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	err = MarkSucceeded(ctx, client, migration)
+	require.NoError(t, err)
 
-			client, err := db.GetShadowDB(ctx)
-			require.NoError(t, err)
-			defer client.Close()
+	// Verify the migration is marked as recovered
+	migrations, err := client.GetAppliedMigrations(ctx)
+	require.NoError(t, err)
+	require.Len(t, migrations, 1)
 
-			err = client.InitMigrationHistory(ctx)
-			require.NoError(t, err)
-
-			migrationName := "20240101120000_marksucceeded_test"
-			checksum := "marksucceeded_checksum"
-
-			// Create a failed migration in the database so RecoverMigration can transition it
-			err = client.StartMigration(ctx, migrationName, checksum, false)
-			require.NoError(t, err)
-			err = client.FailMigration(ctx, migrationName, "some statement", "some error")
-			require.NoError(t, err)
-
-			// Run setup SQL if needed (simulate partial execution)
-			if tt.setupSQL != "" {
-				_, err = client.ExecContext(ctx, tt.setupSQL)
-				require.NoError(t, err)
-			}
-
-			migration := db.Migration{
-				Name:     migrationName,
-				SQL:      tt.migrationSQL,
-				Checksum: checksum,
-			}
-
-			err = MarkSucceeded(ctx, client, migration, tt.failedRecord())
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-
-			// Verify the migration is marked as recovered
-			migrations, err := client.GetAppliedMigrations(ctx)
-			require.NoError(t, err)
-			require.Len(t, migrations, 1)
-
-			assert.Equal(t, db.MigrationStatusRecovered, migrations[0].Status)
-			assert.Nil(t, migrations[0].FailedStatement)
-			assert.Nil(t, migrations[0].ErrorMsg)
-		})
-	}
+	assert.Equal(t, db.MigrationStatusRecovered, migrations[0].Status)
+	assert.Nil(t, migrations[0].FailedStatement)
+	assert.Nil(t, migrations[0].ErrorMsg)
 }

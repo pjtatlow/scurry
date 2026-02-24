@@ -156,11 +156,12 @@ func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error
 			continue
 		}
 		if err := crdb.ExecuteTx(ctx, c.db, &sql.TxOptions{}, func(tx *sql.Tx) error {
-			// Shadow databases don't have schema_locked tables, so we can safely
-			// disable autocommit to keep multiple DDL statements in one transaction.
-			// Production databases may have schema_locked tables which require
-			// autocommit to remain enabled so CockroachDB can auto-unlock them.
-			if c.isShadow {
+			// When disableAutocommitDDL is set, we keep multiple DDL statements
+			// in one transaction. This is safe for shadow databases that don't
+			// have schema_locked tables but should NOT be used when testing
+			// migrations against a shadow DB (e.g. migration gen) because it
+			// masks production behavior where autocommit splits transactions.
+			if c.disableAutocommitDDL {
 				_, err := tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
 				if err != nil {
 					return fmt.Errorf("failed to set autocommit_before_ddl: %w", err)

@@ -16,6 +16,19 @@ type Client struct {
 	db       *sql.DB
 	url      string
 	isShadow bool
+
+	// disableAutocommitDDL controls whether ExecuteBulkDDL sets
+	// autocommit_before_ddl=false inside transactions. This is enabled by
+	// default for shadow databases so multiple DDL statements stay in one
+	// transaction. Callers that need production-like behaviour (e.g.
+	// migration generation) can set this to false.
+	disableAutocommitDDL bool
+}
+
+// SetDisableAutocommitDDL controls whether ExecuteBulkDDL disables
+// autocommit_before_ddl within transactions.
+func (c *Client) SetDisableAutocommitDDL(disable bool) {
+	c.disableAutocommitDDL = disable
 }
 
 // Connect establishes a connection to the CockroachDB database

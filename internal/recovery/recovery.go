@@ -70,25 +70,10 @@ func TryAgain(ctx context.Context, dbClient *db.Client, migration db.Migration) 
 	return nil
 }
 
-// MarkSucceeded executes any remaining statements after the failed one, then marks
-// the migration as recovered. Remaining statements are executed first so that a
-// failure leaves the migration in its original failed state rather than marking it
-// recovered with a partially-applied schema.
-func MarkSucceeded(ctx context.Context, dbClient *db.Client, migration db.Migration, failedRecord *db.AppliedMigration) error {
+// MarkSucceeded marks the migration as recovered without executing any statements.
+func MarkSucceeded(ctx context.Context, dbClient *db.Client, migration db.Migration) error {
 	fmt.Println()
 
-	// Execute remaining statements first, before changing status
-	if failedRecord != nil && failedRecord.FailedStatement != nil && *failedRecord.FailedStatement != "" {
-		fmt.Println(ui.Info("Executing remaining statements..."))
-
-		if err := dbClient.ExecuteRemainingStatements(ctx, migration, *failedRecord.FailedStatement); err != nil {
-			return fmt.Errorf("failed to execute remaining statements: %w", err)
-		}
-
-		fmt.Println(ui.Success("Remaining statements executed successfully"))
-	}
-
-	// Mark as recovered only after remaining statements succeed
 	if err := dbClient.RecoverMigration(ctx, migration.Name); err != nil {
 		return fmt.Errorf("failed to mark migration as recovered: %w", err)
 	}
@@ -155,7 +140,7 @@ func PromptRecoveryOption(config RecoveryPromptConfig) (string, error) {
 	// Build options list
 	options := []huh.Option[string]{
 		huh.NewOption("Try again - Re-run all statements from the beginning", OptionTryAgain),
-		huh.NewOption("Mark as succeeded - Execute remaining statements and mark as recovered", OptionMarkSucceeded),
+		huh.NewOption("Mark as succeeded - Mark the migration as recovered without re-running", OptionMarkSucceeded),
 	}
 
 	if config.IncludeDropDatabase {
@@ -205,7 +190,7 @@ func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryRe
 					refreshed, refreshErr := config.OnRetryFailure(ctx, config.DbClient)
 					if refreshErr == nil && refreshed != nil {
 						failedMigration = refreshed
-						// Update config so MarkSucceeded uses refreshed data
+	
 						config.FailedMigration = failedMigration
 					}
 				}
@@ -216,7 +201,7 @@ func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryRe
 			return ResultSuccess, nil
 
 		case OptionMarkSucceeded:
-			if err := MarkSucceeded(ctx, config.DbClient, config.Migration, failedMigration); err != nil {
+			if err := MarkSucceeded(ctx, config.DbClient, config.Migration); err != nil {
 				return ResultAbort, fmt.Errorf("failed to mark as succeeded: %w", err)
 			}
 			fmt.Println(ui.Success("Migration marked as recovered"))

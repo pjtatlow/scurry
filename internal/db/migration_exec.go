@@ -73,33 +73,3 @@ func (c *Client) ExecuteMigrationWithTracking(ctx context.Context, migration Mig
 	return nil
 }
 
-// ExecuteRemainingStatements executes statements after the failed one
-func (c *Client) ExecuteRemainingStatements(ctx context.Context, migration Migration, failedStatement string) error {
-	// Parse SQL into statements
-	statements, err := SplitStatements(migration.SQL)
-	if err != nil {
-		return fmt.Errorf("failed to parse migration: %w", err)
-	}
-
-	// Find the failed statement and execute everything after it
-	foundFailed := false
-	for _, stmt := range statements {
-		if !foundFailed {
-			if stmt == failedStatement {
-				foundFailed = true
-			}
-			continue
-		}
-		// Execute remaining statements
-		_, err := c.db.ExecContext(ctx, stmt)
-		if err != nil {
-			return fmt.Errorf("failed to execute remaining statement: %w", err)
-		}
-	}
-
-	if !foundFailed {
-		return fmt.Errorf("could not find failed statement in migration SQL; the migration file may have been modified since the failure")
-	}
-
-	return nil
-}

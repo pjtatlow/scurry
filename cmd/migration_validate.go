@@ -331,6 +331,10 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []db.Migrati
 	}
 	defer client.Close()
 
+	// Keep autocommit_before_ddl enabled (production behavior) so we catch
+	// migrations that would fail due to transaction boundary issues.
+	client.SetDisableAutocommitDDL(false)
+
 	// Apply remaining migrations
 	for i := startIndex; i < len(migrations); i++ {
 		mig := migrations[i]

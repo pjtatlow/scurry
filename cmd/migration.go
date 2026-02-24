@@ -143,6 +143,10 @@ func applyMigrationsToSchema(ctx context.Context, prodSchema *schema.Schema, mig
 	}
 	defer client.Close()
 
+	// Keep autocommit_before_ddl enabled (production behavior) so we catch
+	// migrations that would fail due to transaction boundary issues.
+	client.SetDisableAutocommitDDL(false)
+
 	if err := client.ExecuteBulkDDL(ctx, migrations...); err != nil {
 		return nil, err
 	}
