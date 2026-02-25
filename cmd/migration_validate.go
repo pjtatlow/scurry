@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -55,6 +56,16 @@ func doMigrationValidate(ctx context.Context) error {
 	// Validate migrations directory
 	if err := validateMigrationsDir(fs); err != nil {
 		return err
+	}
+
+	// Validate schema.sql exists and is parseable (skip in overwrite mode)
+	if !validateOverwrite {
+		if flags.Verbose {
+			fmt.Println(ui.Subtle("→ Validating schema.sql..."))
+		}
+		if err := validateSchemaFile(fs); err != nil {
+			return err
+		}
 	}
 
 	// 1. Load all migration files in order
@@ -183,6 +194,35 @@ func doMigrationValidate(ctx context.Context) error {
 		if err := ensureCheckpointForLastMigration(fs, migrations, resultSchema, flags.Verbose); err != nil {
 			return fmt.Errorf("failed to create checkpoint: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// validateSchemaFile checks that schema.sql exists and contains valid SQL.
+func validateSchemaFile(fs afero.Fs) error {
+	schemaPath := getSchemaFilePath()
+
+	exists, err := afero.Exists(fs, schemaPath)
+	if err != nil {
+		return fmt.Errorf("failed to check schema.sql: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("schema.sql not found at %s\nRun 'scurry migration validate --overwrite' to create it", schemaPath)
+	}
+
+	content, err := afero.ReadFile(fs, schemaPath)
+	if err != nil {
+		return fmt.Errorf("failed to read schema.sql: %w", err)
+	}
+
+	sql := strings.TrimSpace(string(content))
+	if sql == "" {
+		return fmt.Errorf("schema.sql is empty at %s\nRun 'scurry migration validate --overwrite' to populate it", schemaPath)
+	}
+
+	if _, err := schema.ParseSQL(sql); err != nil {
+		return fmt.Errorf("schema.sql contains invalid SQL: %w", err)
 	}
 
 	return nil

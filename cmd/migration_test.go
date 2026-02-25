@@ -15,6 +15,93 @@ import (
 	"github.com/pjtatlow/scurry/internal/schema"
 )
 
+func TestValidateSchemaFile(t *testing.T) {
+	tests := []struct {
+		name          string
+		createFile    bool
+		schemaContent string
+		expectErr     bool
+		errContains   string
+	}{
+		{
+			name:        "schema.sql does not exist",
+			createFile:  false,
+			expectErr:   true,
+			errContains: "schema.sql not found",
+		},
+		{
+			name:          "schema.sql is empty",
+			createFile:    true,
+			schemaContent: "",
+			expectErr:     true,
+			errContains:   "schema.sql is empty",
+		},
+		{
+			name:          "schema.sql is whitespace only",
+			createFile:    true,
+			schemaContent: "   \n\t  \n  ",
+			expectErr:     true,
+			errContains:   "schema.sql is empty",
+		},
+		{
+			name:          "schema.sql has invalid SQL",
+			createFile:    true,
+			schemaContent: "CREATE TABLE (",
+			expectErr:     true,
+			errContains:   "invalid SQL",
+		},
+		{
+			name:       "schema.sql has valid SQL",
+			createFile: true,
+			schemaContent: `CREATE TABLE users (
+				id INT PRIMARY KEY,
+				name TEXT NOT NULL
+			);`,
+			expectErr: false,
+		},
+		{
+			name:       "schema.sql with multiple statements",
+			createFile: true,
+			schemaContent: `
+				CREATE TYPE status AS ENUM ('active', 'inactive');
+				CREATE TABLE users (
+					id INT PRIMARY KEY,
+					name TEXT NOT NULL,
+					status status NOT NULL
+				);
+			`,
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fs := afero.NewMemMapFs()
+
+			// Create migrations directory
+			err := fs.MkdirAll(flags.MigrationDir, 0755)
+			require.NoError(t, err)
+
+			if tt.createFile {
+				schemaPath := filepath.Join(flags.MigrationDir, "schema.sql")
+				err = afero.WriteFile(fs, schemaPath, []byte(tt.schemaContent), 0644)
+				require.NoError(t, err)
+			}
+
+			err = validateSchemaFile(fs)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoadProductionSchema(t *testing.T) {
 	tests := []struct {
 		name           string

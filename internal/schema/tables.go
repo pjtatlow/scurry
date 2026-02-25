@@ -1083,6 +1083,13 @@ func compareStorageParams(tableName string, tableRef tree.TableName, localParams
 		localParamMap[p.Key] = p.Value
 	}
 	for _, p := range remoteParams {
+		// CockroachDB 26.1+ automatically sets schema_locked on all tables.
+		// Skip it so we don't generate a spurious RESET (schema_locked) diff.
+		if p.Key == "schema_locked" {
+			if _, inLocal := localParamMap[p.Key]; !inLocal {
+				continue
+			}
+		}
 		remoteParamMap[p.Key] = p.Value
 	}
 

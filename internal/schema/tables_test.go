@@ -1086,3 +1086,99 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 		})
 	}
 }
+
+func TestCompareStorageParams(t *testing.T) {
+	tableName := "users"
+	tableRef := tree.MakeTableNameWithSchema("", "public", "users")
+
+	tests := []struct {
+		name          string
+		localParams   tree.StorageParams
+		remoteParams  tree.StorageParams
+		wantDiffCount int
+		wantDDL       []string
+		wantNoDDL     []string
+	}{
+		{
+			name:          "no differences",
+			localParams:   tree.StorageParams{{Key: "ttl_expire_after", Value: tree.NewDString("30 days")}},
+			remoteParams:  tree.StorageParams{{Key: "ttl_expire_after", Value: tree.NewDString("30 days")}},
+			wantDiffCount: 0,
+		},
+		{
+			name:          "param added",
+			localParams:   tree.StorageParams{{Key: "ttl_expire_after", Value: tree.NewDString("30 days")}},
+			remoteParams:  tree.StorageParams{},
+			wantDiffCount: 1,
+			wantDDL:       []string{"SET", "ttl_expire_after"},
+		},
+		{
+			name:          "param removed",
+			localParams:   tree.StorageParams{},
+			remoteParams:  tree.StorageParams{{Key: "ttl_expire_after", Value: tree.NewDString("30 days")}},
+			wantDiffCount: 1,
+			wantDDL:       []string{"RESET", "ttl_expire_after"},
+		},
+		{
+			name:          "schema_locked in remote only is ignored",
+			localParams:   tree.StorageParams{},
+			remoteParams:  tree.StorageParams{{Key: "schema_locked", Value: tree.DBoolTrue}},
+			wantDiffCount: 0,
+		},
+		{
+			name:          "schema_locked in both is compared normally",
+			localParams:   tree.StorageParams{{Key: "schema_locked", Value: tree.DBoolTrue}},
+			remoteParams:  tree.StorageParams{{Key: "schema_locked", Value: tree.DBoolTrue}},
+			wantDiffCount: 0,
+		},
+		{
+			name:          "schema_locked in local only generates SET",
+			localParams:   tree.StorageParams{{Key: "schema_locked", Value: tree.DBoolTrue}},
+			remoteParams:  tree.StorageParams{},
+			wantDiffCount: 1,
+			wantDDL:       []string{"SET", "schema_locked"},
+		},
+		{
+			name: "schema_locked in remote ignored while other params still diffed",
+			localParams: tree.StorageParams{
+				{Key: "ttl_expire_after", Value: tree.NewDString("30 days")},
+			},
+			remoteParams: tree.StorageParams{
+				{Key: "schema_locked", Value: tree.DBoolTrue},
+			},
+			wantDiffCount: 1,
+			wantDDL:       []string{"SET", "ttl_expire_after"},
+			wantNoDDL:     []string{"schema_locked"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			diffs := compareStorageParams(tableName, tableRef, tt.localParams, tt.remoteParams)
+
+			if len(diffs) != tt.wantDiffCount {
+				t.Fatalf("expected %d diffs, got %d", tt.wantDiffCount, len(diffs))
+			}
+
+			allDDL := ""
+			for _, diff := range diffs {
+				for _, stmt := range diff.MigrationStatements {
+					allDDL += stmt.String() + "\n"
+				}
+			}
+
+			for _, expected := range tt.wantDDL {
+				if !strings.Contains(allDDL, expected) {
+					t.Errorf("DDL should contain %q.\nGot:\n%s", expected, allDDL)
+				}
+			}
+
+			for _, notExpected := range tt.wantNoDDL {
+				if strings.Contains(allDDL, notExpected) {
+					t.Errorf("DDL should NOT contain %q.\nGot:\n%s", notExpected, allDDL)
+				}
+			}
+		})
+	}
+}
