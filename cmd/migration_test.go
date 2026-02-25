@@ -72,6 +72,16 @@ func TestValidateSchemaFile(t *testing.T) {
 			`,
 			expectErr: false,
 		},
+		{
+			name:       "schema.sql with duplicate type",
+			createFile: true,
+			schemaContent: `
+				CREATE TYPE status AS ENUM ('active', 'inactive');
+				CREATE TYPE status AS ENUM ('active', 'inactive');
+			`,
+			expectErr:   true,
+			errContains: "cannot be applied",
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,7 +99,8 @@ func TestValidateSchemaFile(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			err = validateSchemaFile(fs)
+			ctx := context.Background()
+			err = validateSchemaFile(ctx, fs)
 
 			if tt.expectErr {
 				require.Error(t, err)
