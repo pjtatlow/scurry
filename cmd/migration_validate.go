@@ -63,7 +63,7 @@ func doMigrationValidate(ctx context.Context) error {
 		if flags.Verbose {
 			fmt.Println(ui.Subtle("→ Validating schema.sql..."))
 		}
-		if err := validateSchemaFile(fs); err != nil {
+		if err := validateSchemaFile(ctx, fs); err != nil {
 			return err
 		}
 	}
@@ -199,8 +199,9 @@ func doMigrationValidate(ctx context.Context) error {
 	return nil
 }
 
-// validateSchemaFile checks that schema.sql exists and contains valid SQL.
-func validateSchemaFile(fs afero.Fs) error {
+// validateSchemaFile checks that schema.sql exists, contains valid SQL, and
+// can be applied to a clean database (catching semantic errors like duplicate types).
+func validateSchemaFile(ctx context.Context, fs afero.Fs) error {
 	schemaPath := getSchemaFilePath()
 
 	exists, err := afero.Exists(fs, schemaPath)
@@ -221,9 +222,22 @@ func validateSchemaFile(fs afero.Fs) error {
 		return fmt.Errorf("schema.sql is empty at %s\nRun 'scurry migration validate --overwrite' to populate it", schemaPath)
 	}
 
-	if _, err := schema.ParseSQL(sql); err != nil {
+	statements, err := schema.ParseSQL(sql)
+	if err != nil {
 		return fmt.Errorf("schema.sql contains invalid SQL: %w", err)
 	}
+
+	// Apply to a clean database to catch semantic errors (e.g. duplicate types, missing references)
+	var stmtStrings []string
+	for _, stmt := range statements {
+		stmtStrings = append(stmtStrings, stmt.String())
+	}
+
+	client, err := db.GetShadowDB(ctx, stmtStrings...)
+	if err != nil {
+		return fmt.Errorf("schema.sql cannot be applied to a clean database: %w", err)
+	}
+	client.Close()
 
 	return nil
 }
