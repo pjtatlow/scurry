@@ -78,6 +78,16 @@ func TestParseHeader(t *testing.T) {
 			sql:  "-- scurry:mode=sync",
 			want: &Header{Mode: ModeSync},
 		},
+		{
+			name: "sync with squash",
+			sql:  "-- scurry:mode=sync,squash=true\nCREATE TABLE t (id INT);",
+			want: &Header{Mode: ModeSync, Squash: true},
+		},
+		{
+			name:    "squash with invalid value",
+			sql:     "-- scurry:mode=sync,squash=false\nCREATE TABLE t (id INT);",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,6 +131,11 @@ func TestFormatHeader(t *testing.T) {
 			name:   "async with multiple deps",
 			header: &Header{Mode: ModeAsync, DependsOn: []string{"20251115211817_foo", "20251116125806_bar"}},
 			want:   "-- scurry:mode=async,depends_on=20251115211817_foo;20251116125806_bar",
+		},
+		{
+			name:   "sync with squash",
+			header: &Header{Mode: ModeSync, Squash: true},
+			want:   "-- scurry:mode=sync,squash=true",
 		},
 	}
 
@@ -240,6 +255,10 @@ func TestFormatThenParse(t *testing.T) {
 			name:   "async with deps round-trip",
 			header: &Header{Mode: ModeAsync, DependsOn: []string{"20251115211817_foo", "20251116125806_bar"}},
 		},
+		{
+			name:   "sync squash round-trip",
+			header: &Header{Mode: ModeSync, Squash: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -249,6 +268,7 @@ func TestFormatThenParse(t *testing.T) {
 			parsed, err := ParseHeader(formatted)
 			require.NoError(t, err)
 			assert.Equal(t, tt.header.Mode, parsed.Mode)
+			assert.Equal(t, tt.header.Squash, parsed.Squash)
 			if len(tt.header.DependsOn) > 0 {
 				assert.Equal(t, tt.header.DependsOn, parsed.DependsOn)
 			}

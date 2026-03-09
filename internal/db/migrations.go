@@ -16,6 +16,7 @@ type Migration struct {
 	Checksum  string
 	Mode      string // "sync", "async", or "" (treated as sync)
 	DependsOn []string
+	Squash    bool
 }
 
 // Migration status constants
