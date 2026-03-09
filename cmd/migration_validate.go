@@ -315,12 +315,15 @@ func loadMigrations(fs afero.Fs) ([]db.Migration, error) {
 			dependsOn = header.DependsOn
 		}
 
+		squash := header != nil && header.Squash
+
 		allMigrations = append(allMigrations, db.Migration{
 			Name:      dir,
 			SQL:       strippedSQL,
 			Checksum:  checksum,
 			Mode:      mode,
 			DependsOn: dependsOn,
+			Squash:    squash,
 		})
 	}
 
