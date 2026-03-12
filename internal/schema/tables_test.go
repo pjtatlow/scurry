@@ -471,6 +471,81 @@ func TestCompareTablesColumnRemovals(t *testing.T) {
 	}
 }
 
+func TestDropColumnReferencedByPartialIndexPredicate(t *testing.T) {
+	tests := []struct {
+		name             string
+		localTable       string
+		remoteTable      string
+		wantDDLContains  []string
+		wantDDLNotBefore map[string]string // key must appear before value
+	}{
+		{
+			name:       "column only in partial index WHERE clause",
+			localTable: "CREATE TABLE runs (id INT PRIMARY KEY, account_id INT NOT NULL, status STRING NOT NULL DEFAULT 'pending')",
+			remoteTable: `CREATE TABLE runs (
+				id INT PRIMARY KEY,
+				account_id INT NOT NULL,
+				idempotency_key STRING,
+				status STRING NOT NULL DEFAULT 'pending',
+				INDEX runs_account_idempotency (account_id ASC) WHERE idempotency_key IS NOT NULL
+			)`,
+			wantDDLContains: []string{"DROP INDEX", "runs_account_idempotency", "DROP COLUMN", "idempotency_key"},
+			wantDDLNotBefore: map[string]string{
+				"DROP INDEX": "DROP COLUMN",
+			},
+		},
+		{
+			name:       "column in both index key and predicate",
+			localTable: "CREATE TABLE runs (id INT PRIMARY KEY, status STRING NOT NULL)",
+			remoteTable: `CREATE TABLE runs (
+				id INT PRIMARY KEY,
+				flag STRING,
+				status STRING NOT NULL,
+				INDEX runs_flag_idx (flag) WHERE flag IS NOT NULL
+			)`,
+			// flag is in both key columns AND predicate — CockroachDB auto-drops this index
+			wantDDLContains: []string{"DROP COLUMN", "flag"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			localSchema := createSchemaWithTables([]string{tt.localTable})
+			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
+
+			diffs := compareTables(localSchema, remoteSchema)
+
+			// Collect all DDL from all diffs
+			var allDDL []string
+			for _, diff := range diffs {
+				for _, stmt := range diff.MigrationStatements {
+					allDDL = append(allDDL, stmt.String())
+				}
+			}
+
+			joined := strings.Join(allDDL, "\n")
+			for _, expected := range tt.wantDDLContains {
+				if !strings.Contains(joined, expected) {
+					t.Errorf("DDL missing expected string %q.\nGot:\n%s", expected, joined)
+				}
+			}
+
+			// Verify ordering: key must appear before value in the DDL
+			for before, after := range tt.wantDDLNotBefore {
+				beforeIdx := strings.Index(joined, before)
+				afterIdx := strings.Index(joined, after)
+				if beforeIdx == -1 || afterIdx == -1 {
+					continue
+				}
+				if beforeIdx >= afterIdx {
+					t.Errorf("Expected %q to appear before %q in DDL.\nGot:\n%s", before, after, joined)
+				}
+			}
+		})
+	}
+}
+
 func TestCompareTablesColumnAdditionsAndRemovals(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1024,7 +1099,7 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 			wantDDLNotContains: []string{"DROP INDEX"},
 		},
 		{
-			name:       "drop column referenced only in partial index WHERE clause suppresses index drop",
+			name:       "drop column referenced only in partial index WHERE clause generates explicit DROP INDEX",
 			localTable: "CREATE TABLE users (id INT PRIMARY KEY, name STRING)",
 			remoteTable: `CREATE TABLE users (
 				id INT PRIMARY KEY,
@@ -1032,9 +1107,8 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 				is_active BOOL,
 				INDEX idx_active_users (name) WHERE is_active = true
 			)`,
-			wantDiffCount:      1,
-			wantDDLContains:    []string{"DROP COLUMN"},
-			wantDDLNotContains: []string{"DROP INDEX"},
+			wantDiffCount:   1,
+			wantDDLContains: []string{"DROP INDEX", "idx_active_users", "DROP COLUMN"},
 		},
 		{
 			name:       "drop column referenced in both index key and WHERE clause suppresses index drop",
