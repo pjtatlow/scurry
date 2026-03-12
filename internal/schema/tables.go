@@ -132,13 +132,21 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 		}
 	}
 
+	// Remove indexes on dropped columns before comparing.
+	// Indexes where the dropped column is in key/storing columns are auto-dropped by CockroachDB.
+	// Indexes where the dropped column is only in the WHERE predicate need explicit DROP INDEX.
+	predicateOnlyIndexes := removeIndexesOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.indexes, local.Table)
+
 	// Compare remaining columns (type changes already handled above)
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
-	diffs = append(diffs, columnDiffs...)
 
-	// Remove indexes on dropped columns before comparing - these will be
-	// automatically dropped when the column is dropped.
-	removeIndexesOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.indexes)
+	// For indexes that reference dropped columns only in their WHERE predicate,
+	// prepend DROP INDEX statements to the column drop diffs so they execute first.
+	if len(predicateOnlyIndexes) > 0 {
+		prependDropIndexesToColumnDrops(predicateOnlyIndexes, columnDiffs, local.Table)
+	}
+
+	diffs = append(diffs, columnDiffs...)
 
 	// Compare remaining indexes
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
@@ -916,11 +924,28 @@ func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*t
 	}
 }
 
+// getIndexKeyAndStoringColumnNames returns only the key and storing column names
+// for an index, excluding columns referenced only in the WHERE predicate.
+func getIndexKeyAndStoringColumnNames(index *tree.IndexTableDef) []string {
+	cols := make([]string, 0, len(index.Columns)+len(index.Storing))
+	for _, col := range index.Columns {
+		if col.Column != "" {
+			cols = append(cols, col.Column.Normalize())
+		}
+	}
+	for _, col := range index.Storing {
+		cols = append(cols, col.Normalize())
+	}
+	return cols
+}
+
 // removeIndexesOnDroppedColumns removes from remoteIndexes any indexes
 // that reference columns being dropped (columns in remote but not in local).
-// This prevents generating DROP INDEX statements for indexes that will
-// be automatically dropped when their column is dropped.
-func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteIndexes map[string]*tree.IndexTableDef) {
+// Indexes where the dropped column is in key/storing columns are auto-dropped
+// by CockroachDB when the column is dropped. Indexes where the dropped column
+// is only in the WHERE predicate are NOT auto-dropped and are returned so the
+// caller can generate explicit DROP INDEX statements.
+func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteIndexes map[string]*tree.IndexTableDef, tableRef tree.TableName) map[string]*tree.IndexTableDef {
 	// Find dropped columns
 	droppedCols := make(map[string]bool)
 	for colName := range remoteColumns {
@@ -930,15 +955,75 @@ func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.
 	}
 
 	if len(droppedCols) == 0 {
+		return nil
+	}
+
+	predicateOnlyIndexes := make(map[string]*tree.IndexTableDef)
+
+	for indexName, index := range remoteIndexes {
+		// Check if any dropped column is in key/storing columns
+		inKeyStoring := false
+		for _, col := range getIndexKeyAndStoringColumnNames(index) {
+			if droppedCols[col] {
+				inKeyStoring = true
+				break
+			}
+		}
+
+		if inKeyStoring {
+			// CockroachDB auto-drops these when the column is dropped
+			delete(remoteIndexes, indexName)
+			continue
+		}
+
+		// Check if any dropped column is only in the predicate
+		if index.Predicate != nil {
+			inPredicate := false
+			for _, col := range getCheckConstraintColumns(index.Predicate) {
+				if droppedCols[col] {
+					inPredicate = true
+					break
+				}
+			}
+			if inPredicate {
+				// NOT auto-dropped by CockroachDB — need explicit DROP INDEX
+				predicateOnlyIndexes[indexName] = index
+				delete(remoteIndexes, indexName)
+			}
+		}
+	}
+
+	return predicateOnlyIndexes
+}
+
+// prependDropIndexesToColumnDrops adds DROP INDEX statements before DROP COLUMN
+// statements in the given diffs. This handles the case where a partial index
+// references a dropped column only in its WHERE predicate — CockroachDB does not
+// auto-drop these indexes when the column is dropped with RESTRICT.
+func prependDropIndexesToColumnDrops(indexes map[string]*tree.IndexTableDef, diffs []Difference, tableRef tree.TableName) {
+	if len(indexes) == 0 {
 		return
 	}
 
-	// Remove indexes that reference any dropped column
-	for indexName, index := range remoteIndexes {
-		for _, col := range getIndexColumnNames(index) {
-			if droppedCols[col] {
-				delete(remoteIndexes, indexName)
-				break
+	// Build DROP INDEX statements for all predicate-only indexes
+	var dropStmts []tree.Statement
+	for indexName := range indexes {
+		dropStmts = append(dropStmts, &tree.DropIndex{
+			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(indexName)}},
+			DropBehavior: tree.DropRestrict,
+		})
+	}
+
+	// Find the first column-removal diff and prepend the DROP INDEX statements
+	for i, diff := range diffs {
+		for _, stmt := range diff.MigrationStatements {
+			if at, ok := stmt.(*tree.AlterTable); ok {
+				for _, cmd := range at.Cmds {
+					if _, ok := cmd.(*tree.AlterTableDropColumn); ok {
+						diffs[i].MigrationStatements = append(dropStmts, diffs[i].MigrationStatements...)
+						return
+					}
+				}
 			}
 		}
 	}
