@@ -137,6 +137,13 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	// Indexes where the dropped column is only in the WHERE predicate need explicit DROP INDEX.
 	predicateOnlyIndexes := removeIndexesOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.indexes, local.Table)
 
+	// Remove constraints on dropped columns before comparing - these will be
+	// automatically dropped when the column is dropped, so we don't need to
+	// generate separate DROP CONSTRAINT statements.
+	// Partial unique constraints with predicates referencing dropped columns need
+	// explicit DROP INDEX statements, returned separately.
+	predicateUniqueConstraints := removeConstraintsOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.constraints)
+
 	// Compare remaining columns (type changes already handled above)
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
 
@@ -146,15 +153,16 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 		prependDropIndexesToColumnDrops(predicateOnlyIndexes, columnDiffs, local.Table)
 	}
 
+	// For unique constraints that reference dropped columns in their WHERE predicate,
+	// prepend DROP INDEX statements to the column drop diffs so they execute first.
+	if len(predicateUniqueConstraints) > 0 {
+		prependDropUniqueConstraintIndexesToColumnDrops(predicateUniqueConstraints, columnDiffs, local.Table)
+	}
+
 	diffs = append(diffs, columnDiffs...)
 
 	// Compare remaining indexes
 	indexDiffs := compareIndexes(tableName, local.Table, localComponents.indexes, remoteComponents.indexes)
-
-	// Remove constraints on dropped columns before comparing - these will be
-	// automatically dropped when the column is dropped, so we don't need to
-	// generate separate DROP CONSTRAINT statements.
-	removeConstraintsOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.constraints)
 
 	// Compare remaining constraints
 	constraintDiffs := compareConstraints(tableName, local.Table, localComponents.constraints, remoteComponents.constraints)
@@ -900,7 +908,11 @@ func (v *checkConstraintColumnVisitor) VisitPost(expr tree.Expr) tree.Expr {
 // that reference columns being dropped (columns in remote but not in local).
 // This prevents generating DROP CONSTRAINT statements for constraints that will
 // be automatically dropped when their column is dropped.
-func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteConstraints map[string]tree.ConstraintTableDef) {
+//
+// Partial unique constraints (UNIQUE INDEX with WHERE predicate) that reference
+// dropped columns are NOT auto-dropped by CockroachDB. These are returned as a
+// separate map so the caller can generate explicit DROP INDEX statements.
+func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteConstraints map[string]tree.ConstraintTableDef) map[string]*tree.UniqueConstraintTableDef {
 	// Find dropped columns
 	droppedCols := make(map[string]bool)
 	for colName := range remoteColumns {
@@ -910,11 +922,30 @@ func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*t
 	}
 
 	if len(droppedCols) == 0 {
-		return
+		return nil
 	}
+
+	predicateUniqueConstraints := make(map[string]*tree.UniqueConstraintTableDef)
 
 	// Remove constraints that reference any dropped column
 	for constraintName, constraint := range remoteConstraints {
+		// For unique constraints with WHERE predicates, check if the predicate
+		// references a dropped column — CockroachDB won't auto-drop these.
+		if uc, ok := constraint.(*tree.UniqueConstraintTableDef); ok && !uc.PrimaryKey && uc.Predicate != nil {
+			predicateRefersDropped := false
+			for _, col := range getCheckConstraintColumns(uc.Predicate) {
+				if droppedCols[col] {
+					predicateRefersDropped = true
+					break
+				}
+			}
+			if predicateRefersDropped {
+				predicateUniqueConstraints[constraintName] = uc
+				delete(remoteConstraints, constraintName)
+				continue
+			}
+		}
+
 		for _, col := range getConstraintColumns(constraint) {
 			if droppedCols[col] {
 				delete(remoteConstraints, constraintName)
@@ -922,6 +953,8 @@ func removeConstraintsOnDroppedColumns(localColumns, remoteColumns map[string]*t
 			}
 		}
 	}
+
+	return predicateUniqueConstraints
 }
 
 // getIndexKeyAndStoringColumnNames returns only the key and storing column names
@@ -941,9 +974,10 @@ func getIndexKeyAndStoringColumnNames(index *tree.IndexTableDef) []string {
 
 // removeIndexesOnDroppedColumns removes from remoteIndexes any indexes
 // that reference columns being dropped (columns in remote but not in local).
-// Indexes where the dropped column is in key/storing columns are auto-dropped
-// by CockroachDB when the column is dropped. Indexes where the dropped column
-// is only in the WHERE predicate are NOT auto-dropped and are returned so the
+// Non-partial indexes where the dropped column is in key/storing columns are
+// auto-dropped by CockroachDB when the column is dropped. Partial indexes
+// (those with WHERE predicates) that reference dropped columns anywhere — in
+// key, storing, or predicate — are NOT auto-dropped and are returned so the
 // caller can generate explicit DROP INDEX statements.
 func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.ColumnTableDef, remoteIndexes map[string]*tree.IndexTableDef, tableRef tree.TableName) map[string]*tree.IndexTableDef {
 	// Find dropped columns
@@ -970,26 +1004,26 @@ func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.
 			}
 		}
 
-		if inKeyStoring {
-			// CockroachDB auto-drops these when the column is dropped
-			delete(remoteIndexes, indexName)
-			continue
-		}
-
-		// Check if any dropped column is only in the predicate
+		// Check if any dropped column is in the predicate
+		inPredicate := false
 		if index.Predicate != nil {
-			inPredicate := false
 			for _, col := range getCheckConstraintColumns(index.Predicate) {
 				if droppedCols[col] {
 					inPredicate = true
 					break
 				}
 			}
-			if inPredicate {
-				// NOT auto-dropped by CockroachDB — need explicit DROP INDEX
-				predicateOnlyIndexes[indexName] = index
-				delete(remoteIndexes, indexName)
-			}
+		}
+
+		if inPredicate {
+			// CockroachDB does NOT auto-drop partial indexes when a column they
+			// reference in their WHERE predicate is dropped, regardless of whether
+			// the column is also in key/storing columns. Need explicit DROP INDEX.
+			predicateOnlyIndexes[indexName] = index
+			delete(remoteIndexes, indexName)
+		} else if inKeyStoring {
+			// Non-partial index with column in key/storing — CockroachDB auto-drops
+			delete(remoteIndexes, indexName)
 		}
 	}
 
@@ -1011,6 +1045,39 @@ func prependDropIndexesToColumnDrops(indexes map[string]*tree.IndexTableDef, dif
 		dropStmts = append(dropStmts, &tree.DropIndex{
 			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(indexName)}},
 			DropBehavior: tree.DropRestrict,
+		})
+	}
+
+	// Find the first column-removal diff and prepend the DROP INDEX statements
+	for i, diff := range diffs {
+		for _, stmt := range diff.MigrationStatements {
+			if at, ok := stmt.(*tree.AlterTable); ok {
+				for _, cmd := range at.Cmds {
+					if _, ok := cmd.(*tree.AlterTableDropColumn); ok {
+						diffs[i].MigrationStatements = append(dropStmts, diffs[i].MigrationStatements...)
+						return
+					}
+				}
+			}
+		}
+	}
+}
+
+// prependDropUniqueConstraintIndexesToColumnDrops adds DROP INDEX statements before
+// DROP COLUMN statements for partial unique constraints that reference dropped columns
+// in their WHERE predicate. CockroachDB does not auto-drop these when the column is dropped.
+func prependDropUniqueConstraintIndexesToColumnDrops(constraints map[string]*tree.UniqueConstraintTableDef, diffs []Difference, tableRef tree.TableName) {
+	if len(constraints) == 0 {
+		return
+	}
+
+	// Build DROP INDEX statements for all predicate unique constraints.
+	// Must use CASCADE because the index backs a unique constraint.
+	var dropStmts []tree.Statement
+	for constraintName := range constraints {
+		dropStmts = append(dropStmts, &tree.DropIndex{
+			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(constraintName)}},
+			DropBehavior: tree.DropCascade,
 		})
 	}
 
