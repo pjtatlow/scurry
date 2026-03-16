@@ -503,8 +503,27 @@ func TestDropColumnReferencedByPartialIndexPredicate(t *testing.T) {
 				status STRING NOT NULL,
 				INDEX runs_flag_idx (flag) WHERE flag IS NOT NULL
 			)`,
-			// flag is in both key columns AND predicate — CockroachDB auto-drops this index
-			wantDDLContains: []string{"DROP COLUMN", "flag"},
+			// flag is in both key columns AND predicate — CockroachDB does NOT auto-drop partial indexes
+			wantDDLContains: []string{"DROP INDEX", "runs_flag_idx", "DROP COLUMN", "flag"},
+			wantDDLNotBefore: map[string]string{
+				"DROP INDEX": "DROP COLUMN",
+			},
+		},
+		{
+			name:       "column in partial unique constraint key and predicate",
+			localTable: "CREATE TABLE runs (id INT PRIMARY KEY, account_id INT NOT NULL)",
+			remoteTable: `CREATE TABLE runs (
+				id INT PRIMARY KEY,
+				account_id INT NOT NULL,
+				idempotency_key STRING,
+				UNIQUE INDEX runs_account_idempotency (account_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+			)`,
+			// idempotency_key is in both key columns AND predicate of a UNIQUE INDEX
+			// CockroachDB does NOT auto-drop partial indexes
+			wantDDLContains: []string{"DROP INDEX", "runs_account_idempotency", "DROP COLUMN", "idempotency_key"},
+			wantDDLNotBefore: map[string]string{
+				"DROP INDEX": "DROP COLUMN",
+			},
 		},
 	}
 
@@ -1111,16 +1130,15 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 			wantDDLContains: []string{"DROP INDEX", "idx_active_users", "DROP COLUMN"},
 		},
 		{
-			name:       "drop column referenced in both index key and WHERE clause suppresses index drop",
+			name:       "drop column referenced in partial unique index generates explicit DROP INDEX",
 			localTable: "CREATE TABLE users (id INT PRIMARY KEY)",
 			remoteTable: `CREATE TABLE users (
 				id INT PRIMARY KEY,
 				email STRING,
 				UNIQUE INDEX idx_email (email) WHERE email IS NOT NULL
 			)`,
-			wantDiffCount:      1,
-			wantDDLContains:    []string{"DROP COLUMN"},
-			wantDDLNotContains: []string{"DROP INDEX"},
+			wantDiffCount:   1,
+			wantDDLContains: []string{"DROP INDEX", "idx_email", "DROP COLUMN"},
 		},
 	}
 

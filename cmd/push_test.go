@@ -259,6 +259,31 @@ func TestPushIntegration(t *testing.T) {
 			expectedStmts:     []string{"DROP INDEX", "runs_account_idempotency", "DROP COLUMN", "idempotency_key"},
 		},
 		{
+			name: "drop column referenced by partial unique constraint predicate",
+			initialSchema: map[string]string{
+				"tables/runs.sql": `
+					CREATE TABLE runs (
+						id INT PRIMARY KEY,
+						account_id INT NOT NULL,
+						idempotency_key STRING,
+						status STRING NOT NULL DEFAULT 'pending',
+						UNIQUE INDEX runs_account_idempotency (account_id ASC, idempotency_key ASC) WHERE idempotency_key IS NOT NULL
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/runs.sql": `
+					CREATE TABLE runs (
+						id INT PRIMARY KEY,
+						account_id INT NOT NULL,
+						status STRING NOT NULL DEFAULT 'pending'
+					);
+				`,
+			},
+			expectedStmtCount: 2, // DROP INDEX, DROP COLUMN
+			expectedStmts:     []string{"DROP INDEX", "runs_account_idempotency", "DROP COLUMN", "idempotency_key"},
+		},
+		{
 			name: "multiple changes",
 			initialSchema: map[string]string{
 				"tables/users.sql": `
