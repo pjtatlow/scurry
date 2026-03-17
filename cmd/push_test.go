@@ -349,7 +349,7 @@ func TestPushIntegration(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -655,7 +655,7 @@ func TestPushIntegrationComplex(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -714,7 +714,7 @@ func TestPushIntegrationNoChanges(t *testing.T) {
 
 	opts := PushOptions{
 		Fs:            fs,
-		DefinitionDir: schemaDir,
+		DefinitionDirs: []string{schemaDir},
 		DbClient:      client,
 		Verbose:       false,
 		DryRun:        false,
@@ -759,7 +759,7 @@ func TestPushIntegrationDryRun(t *testing.T) {
 
 	opts := PushOptions{
 		Fs:            fs,
-		DefinitionDir: schemaDir,
+		DefinitionDirs: []string{schemaDir},
 		DbClient:      client,
 		Verbose:       false,
 		DryRun:        true,
@@ -1107,7 +1107,7 @@ func TestPushIntegrationColumnTypeChanges(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -1233,7 +1233,7 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -1337,7 +1337,7 @@ func TestPushDropColumnWithIndex(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -1442,7 +1442,7 @@ func TestPushAddPartialIndexOnNewColumn(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,
@@ -1586,7 +1586,7 @@ func TestPushRowLevelTTL(t *testing.T) {
 
 			opts := PushOptions{
 				Fs:            fs,
-				DefinitionDir: schemaDir,
+				DefinitionDirs: []string{schemaDir},
 				DbClient:      client,
 				Verbose:       false,
 				DryRun:        false,

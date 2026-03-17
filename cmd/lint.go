@@ -38,11 +38,11 @@ Suppress specific checks with SQL comments in definition files:
 func init() {
 	rootCmd.AddCommand(lintCmd)
 
-	flags.AddDefinitionDir(lintCmd)
+	flags.AddDefinitionDirs(lintCmd)
 }
 
 func lint(cmd *cobra.Command, args []string) error {
-	if flags.DefinitionDir == "" {
+	if len(flags.DefinitionDirs) == 0 {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
@@ -75,7 +75,7 @@ func doLint(ctx context.Context) error {
 	fs := afero.NewOsFs()
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", strings.Join(flags.DefinitionDirs, ", "))))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -84,12 +84,12 @@ func doLint(ctx context.Context) error {
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, fs, flags.DefinitionDir, dbClient)
+	localSchema, err := schema.LoadFromDirectories(ctx, fs, flags.DefinitionDirs, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 
-	disables, err := loadLintDisables(fs, flags.DefinitionDir)
+	disables, err := loadLintDisablesFromDirs(fs, flags.DefinitionDirs)
 	if err != nil {
 		return fmt.Errorf("failed to load lint directives: %w", err)
 	}
@@ -567,6 +567,21 @@ func parseLintDisables(sql string) []lintDisable {
 		directives = append(directives, d)
 	}
 	return directives
+}
+
+// loadLintDisablesFromDirs walks multiple definition directories and merges lint-disable directives.
+func loadLintDisablesFromDirs(fs afero.Fs, dirPaths []string) (map[string][]lintDisable, error) {
+	result := make(map[string][]lintDisable)
+	for _, dirPath := range dirPaths {
+		dirResult, err := loadLintDisables(fs, dirPath)
+		if err != nil {
+			return nil, err
+		}
+		for table, disables := range dirResult {
+			result[table] = append(result[table], disables...)
+		}
+	}
+	return result, nil
 }
 
 // loadLintDisables walks the definition directory, parses lint-disable directives
