@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +12,10 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
 	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
+	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
@@ -58,7 +61,7 @@ func runMigrationSquash(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --before value %q: %w", squashBeforeStr, err)
 	}
-	err = doMigrationSquash(afero.NewOsFs(), squashBefore)
+	err = doMigrationSquash(cmd.Context(), afero.NewOsFs(), squashBefore)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
@@ -98,7 +101,7 @@ func parseDuration(s string) (time.Duration, error) {
 	}
 }
 
-func doMigrationSquash(fs afero.Fs, squashBefore time.Duration) error {
+func doMigrationSquash(ctx context.Context, fs afero.Fs, squashBefore time.Duration) error {
 
 	// Validate migrations directory
 	if err := validateMigrationsDir(fs); err != nil {
@@ -163,15 +166,28 @@ func doMigrationSquash(fs afero.Fs, squashBefore time.Duration) error {
 		}
 	}
 
-	// Build combined SQL from squashed migrations (headers already stripped by loadMigrations)
-	var combinedParts []string
-	for _, idx := range toSquash {
-		sql := strings.TrimSpace(migrations[idx].SQL)
-		if sql != "" {
-			combinedParts = append(combinedParts, sql)
-		}
+	// Apply squashed migrations to a shadow database to get the final schema state
+	if flags.Verbose {
+		fmt.Println(ui.Subtle("→ Applying squashed migrations to get final schema..."))
 	}
-	combinedSQL := strings.Join(combinedParts, "\n\n")
+
+	squashedMigrations := make([]db.Migration, len(toSquash))
+	for i, idx := range toSquash {
+		squashedMigrations[i] = migrations[idx]
+	}
+
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, squashedMigrations, flags.Verbose)
+	if err != nil {
+		return fmt.Errorf("failed to apply squashed migrations: %w", err)
+	}
+
+	// Generate clean CREATE statements from the resulting schema
+	createStatements, _, err := schema.Compare(resultSchema, schema.NewSchema()).GenerateMigrations(true)
+	if err != nil {
+		return fmt.Errorf("failed to generate schema statements: %w", err)
+	}
+
+	squashedSQL := strings.Join(createStatements, ";\n\n") + ";\n"
 
 	// Use the timestamp of the last squashed migration for the new name
 	lastSquashed := migrations[toSquash[len(toSquash)-1]]
@@ -185,7 +201,7 @@ func doMigrationSquash(fs afero.Fs, squashBefore time.Duration) error {
 		Mode:   migrationpkg.ModeSync,
 		Squash: true,
 	}
-	content := migrationpkg.FormatHeader(header) + "\n" + combinedSQL
+	content := migrationpkg.FormatHeader(header) + "\n" + squashedSQL
 
 	// Create squash migration directory and file
 	if flags.Verbose {
