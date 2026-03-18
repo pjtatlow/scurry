@@ -388,10 +388,6 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []db.Migrati
 	}
 	defer client.Close()
 
-	// Keep autocommit_before_ddl enabled (production behavior) so we catch
-	// migrations that would fail due to transaction boundary issues.
-	client.SetDisableAutocommitDDL(false)
-
 	// Apply remaining migrations
 	for i := startIndex; i < len(migrations); i++ {
 		mig := migrations[i]
@@ -406,6 +402,16 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []db.Migrati
 		statements, splitErr := db.SplitStatements(mig.SQL)
 		if splitErr != nil {
 			return nil, fmt.Errorf("failed to parse migration %s: %w", mig.Name, splitErr)
+		}
+
+		// Squash migrations contain clean CREATE statements (a schema snapshot),
+		// so they can safely run with autocommit disabled for speed. Real
+		// migrations run with autocommit enabled (production behavior) to catch
+		// transaction boundary issues.
+		if mig.Squash {
+			client.SetDisableAutocommitDDL(true)
+		} else {
+			client.SetDisableAutocommitDDL(false)
 		}
 
 		err = client.ExecuteBulkDDL(ctx, statements...)
