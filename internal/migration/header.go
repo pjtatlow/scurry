@@ -25,6 +25,7 @@ const headerPrefix = "-- scurry:"
 type Header struct {
 	Mode      MigrationMode
 	DependsOn []string
+	Squash    bool
 }
 
 // ParseHeader parses the first line of a migration SQL string for a scurry header.
@@ -58,6 +59,11 @@ func ParseHeader(sql string) (*Header, error) {
 				return nil, fmt.Errorf("depends_on must not be empty")
 			}
 			h.DependsOn = strings.Split(value, ";")
+		case "squash":
+			if value != "true" {
+				return nil, fmt.Errorf("squash must be \"true\"")
+			}
+			h.Squash = true
 		default:
 			return nil, fmt.Errorf("unknown header field: %q", key)
 		}
@@ -80,6 +86,10 @@ func FormatHeader(h *Header) string {
 	if len(h.DependsOn) > 0 {
 		sb.WriteString(",depends_on=")
 		sb.WriteString(strings.Join(h.DependsOn, ";"))
+	}
+
+	if h.Squash {
+		sb.WriteString(",squash=true")
 	}
 
 	return sb.String()

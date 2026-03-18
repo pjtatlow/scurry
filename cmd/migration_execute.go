@@ -243,6 +243,19 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		// Squash migrations are historical snapshots; record as succeeded without executing
+		if migration.Squash {
+			fmt.Printf("Recording squash migration %s (%d/%d)...\n", migration.Name, i+1, len(migrationsToExecute))
+			if err := dbClient.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == db.MigrationModeAsync); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("\nFailed to record squash migration: %s", migration.Name)))
+				fmt.Println(ui.Error(fmt.Sprintf("Error: %v", err)))
+				return fmt.Errorf("migration execution stopped due to error")
+			}
+			fmt.Printf("  %s\n", ui.Success("✓ Recorded (squash)"))
+			executed++
+			continue
+		}
+
 		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(migrationsToExecute))
 
 		err := dbClient.ExecuteMigrationWithTracking(ctx, migration)
