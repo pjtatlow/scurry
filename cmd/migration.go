@@ -105,12 +105,32 @@ func dumpProductionSchema(ctx context.Context, fs afero.Fs, sch *schema.Schema) 
 	return nil
 }
 
+// sanitizeMigrationName cleans up a migration name so it is safe to use as a directory name.
+// Slashes, spaces, and dashes are replaced with underscores, and consecutive underscores are collapsed.
+func sanitizeMigrationName(name string) string {
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range name {
+		switch r {
+		case '/', '\\', ' ', '-':
+			if !prevUnderscore {
+				b.WriteByte('_')
+			}
+			prevUnderscore = true
+		default:
+			b.WriteRune(r)
+			prevUnderscore = false
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
 // Helper function to create migration directory and file
 // Returns the migration directory name and the content written to migration.sql
 func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
 	// Generate timestamp prefix
 	timestamp := time.Now().Format("20060102150405")
-	migrationName := fmt.Sprintf("%s_%s", timestamp, name)
+	migrationName := fmt.Sprintf("%s_%s", timestamp, sanitizeMigrationName(name))
 	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
 
 	// Create migration directory

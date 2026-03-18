@@ -1,21 +1,25 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
+	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
 	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
+	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
-var squashBefore time.Duration
+var squashBeforeStr string
 
 var migrationSquashCmd = &cobra.Command{
 	Use:   "squash",
@@ -27,27 +31,37 @@ marked with a special header so that the migration system skips it during execut
 Existing databases already have these migrations applied, so the squash migration
 serves as a historical record and is used only during validation.
 
+Supports Go duration syntax (e.g., 720h) as well as shorthand units:
+  d = days, w = weeks, m = months (30 days)
+
 Examples:
   # Squash migrations older than 30 days
-  scurry migration squash --before=720h
+  scurry migration squash --before=30d
 
-  # Squash migrations older than 90 days
-  scurry migration squash --before=2160h
+  # Squash migrations older than 3 months
+  scurry migration squash --before=3m
+
+  # Squash migrations older than 2 weeks
+  scurry migration squash --before=2w
 
   # Squash without confirmation prompt
-  scurry migration squash --before=720h --force
+  scurry migration squash --before=30d --force
 `,
 	RunE: runMigrationSquash,
 }
 
 func init() {
 	migrationCmd.AddCommand(migrationSquashCmd)
-	migrationSquashCmd.Flags().DurationVar(&squashBefore, "before", 0, "Squash migrations older than this duration (e.g., 720h for 30 days)")
+	migrationSquashCmd.Flags().StringVar(&squashBeforeStr, "before", "", "Squash migrations older than this duration (e.g., 30d, 2w, 3m, 720h)")
 	_ = migrationSquashCmd.MarkFlagRequired("before")
 }
 
 func runMigrationSquash(cmd *cobra.Command, args []string) error {
-	err := doMigrationSquash(afero.NewOsFs())
+	squashBefore, err := parseDuration(squashBeforeStr)
+	if err != nil {
+		return fmt.Errorf("invalid --before value %q: %w", squashBeforeStr, err)
+	}
+	err = doMigrationSquash(cmd.Context(), afero.NewOsFs(), squashBefore)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
@@ -55,7 +69,39 @@ func runMigrationSquash(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func doMigrationSquash(fs afero.Fs) error {
+// parseDuration parses a duration string with support for shorthand units:
+// d (days), w (weeks), m (months/30 days), in addition to standard Go duration syntax.
+func parseDuration(s string) (time.Duration, error) {
+	if len(s) == 0 {
+		return 0, fmt.Errorf("empty duration")
+	}
+
+	suffix := s[len(s)-1]
+	switch suffix {
+	case 'd':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid number before 'd': %w", err)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'w':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid number before 'w': %w", err)
+		}
+		return time.Duration(n) * 7 * 24 * time.Hour, nil
+	case 'm':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid number before 'm': %w", err)
+		}
+		return time.Duration(n) * 30 * 24 * time.Hour, nil
+	default:
+		return time.ParseDuration(s)
+	}
+}
+
+func doMigrationSquash(ctx context.Context, fs afero.Fs, squashBefore time.Duration) error {
 
 	// Validate migrations directory
 	if err := validateMigrationsDir(fs); err != nil {
@@ -120,15 +166,28 @@ func doMigrationSquash(fs afero.Fs) error {
 		}
 	}
 
-	// Build combined SQL from squashed migrations (headers already stripped by loadMigrations)
-	var combinedParts []string
-	for _, idx := range toSquash {
-		sql := strings.TrimSpace(migrations[idx].SQL)
-		if sql != "" {
-			combinedParts = append(combinedParts, sql)
-		}
+	// Apply squashed migrations to a shadow database to get the final schema state
+	if flags.Verbose {
+		fmt.Println(ui.Subtle("→ Applying squashed migrations to get final schema..."))
 	}
-	combinedSQL := strings.Join(combinedParts, "\n\n")
+
+	squashedMigrations := make([]db.Migration, len(toSquash))
+	for i, idx := range toSquash {
+		squashedMigrations[i] = migrations[idx]
+	}
+
+	resultSchema, err := applyMigrationsToCleanDatabase(ctx, squashedMigrations, flags.Verbose)
+	if err != nil {
+		return fmt.Errorf("failed to apply squashed migrations: %w", err)
+	}
+
+	// Generate clean CREATE statements from the resulting schema
+	createStatements, _, err := schema.Compare(resultSchema, schema.NewSchema()).GenerateMigrations(true)
+	if err != nil {
+		return fmt.Errorf("failed to generate schema statements: %w", err)
+	}
+
+	squashedSQL := strings.Join(createStatements, ";\n\n") + ";\n"
 
 	// Use the timestamp of the last squashed migration for the new name
 	lastSquashed := migrations[toSquash[len(toSquash)-1]]
@@ -142,7 +201,7 @@ func doMigrationSquash(fs afero.Fs) error {
 		Mode:   migrationpkg.ModeSync,
 		Squash: true,
 	}
-	content := migrationpkg.FormatHeader(header) + "\n" + combinedSQL
+	content := migrationpkg.FormatHeader(header) + "\n" + squashedSQL
 
 	// Create squash migration directory and file
 	if flags.Verbose {

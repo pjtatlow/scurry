@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +14,43 @@ import (
 	"github.com/pjtatlow/scurry/internal/flags"
 	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 )
+
+func TestParseDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "days", input: "7d", want: 7 * 24 * time.Hour},
+		{name: "weeks", input: "2w", want: 2 * 7 * 24 * time.Hour},
+		{name: "months", input: "3m", want: 3 * 30 * 24 * time.Hour},
+		{name: "single day", input: "1d", want: 24 * time.Hour},
+		{name: "single month", input: "1m", want: 30 * 24 * time.Hour},
+		{name: "go duration hours", input: "720h", want: 720 * time.Hour},
+		{name: "go duration minutes+seconds", input: "1h30s", want: time.Hour + 30*time.Second},
+		{name: "empty string", input: "", wantErr: true},
+		{name: "invalid number before d", input: "abcd", wantErr: true},
+		{name: "invalid number before w", input: "xw", wantErr: true},
+		{name: "invalid number before m", input: "ym", wantErr: true},
+		{name: "invalid go duration", input: "notaduration", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseDuration(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 func TestParseMigrationTimestamp(t *testing.T) {
 	t.Parallel()
@@ -60,7 +98,7 @@ func TestParseMigrationTimestamp(t *testing.T) {
 }
 
 func TestDoMigrationSquash(t *testing.T) {
-	// Not parallel: subtests modify shared globals (flags.Force, squashBefore)
+	// Not parallel: subtests modify shared globals (flags.Force, flags.MigrationDir)
 
 	// Helper to create a migration directory with SQL content
 	createMigrationDir := func(t *testing.T, fs afero.Fs, name, sql string) {
@@ -72,21 +110,24 @@ func TestDoMigrationSquash(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	t.Run("squash combines migrations and removes originals", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
+	t.Run("squash produces clean CREATE statements and removes originals", func(t *testing.T) {
+		ctx := context.Background()
+		fs := afero.NewOsFs()
 
-		// Create migrations directory
-		err := fs.MkdirAll(flags.MigrationDir, 0755)
-		require.NoError(t, err)
+		// Use a temp directory for migrations
+		tmpDir := t.TempDir()
+		oldMigrationDir := flags.MigrationDir
+		flags.MigrationDir = tmpDir
+		defer func() { flags.MigrationDir = oldMigrationDir }()
 
 		// Create old migrations (well in the past)
-		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT8 PRIMARY KEY, name STRING NOT NULL);")
 		createMigrationDir(t, fs, "20240201000000_add_email", "ALTER TABLE users ADD COLUMN email STRING;")
 
 		// Create a recent migration (should not be squashed)
 		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
 		recentName := recentTimestamp + "_add_posts"
-		createMigrationDir(t, fs, recentName, "CREATE TABLE posts (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, recentName, "CREATE TABLE posts (id INT8 PRIMARY KEY);")
 
 		// Load migrations to verify setup
 		migrations, err := loadMigrations(fs)
@@ -94,11 +135,10 @@ func TestDoMigrationSquash(t *testing.T) {
 		require.Len(t, migrations, 3)
 
 		// Set squash params and run
-		squashBefore = 720 * time.Hour // 30 days
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err = doMigrationSquash(ctx, fs, 720*time.Hour)
 		require.NoError(t, err)
 
 		// Verify: old migration dirs should be gone
@@ -125,9 +165,11 @@ func TestDoMigrationSquash(t *testing.T) {
 		assert.Contains(t, contentStr, "squash=true")
 		assert.Contains(t, contentStr, "mode=sync")
 
-		// Should contain both original migration SQLs
-		assert.Contains(t, contentStr, "CREATE TABLE users")
-		assert.Contains(t, contentStr, "ALTER TABLE users ADD COLUMN email")
+		// Should contain a clean CREATE TABLE with the email column (final state),
+		// NOT an ALTER TABLE statement
+		assert.Contains(t, contentStr, "CREATE TABLE")
+		assert.Contains(t, contentStr, "email")
+		assert.NotContains(t, contentStr, "ALTER TABLE", "squash should contain final CREATE statements, not ALTERs")
 
 		// Verify: recent migration should still exist
 		exists, err = afero.DirExists(fs, filepath.Join(flags.MigrationDir, recentName))
@@ -136,63 +178,69 @@ func TestDoMigrationSquash(t *testing.T) {
 	})
 
 	t.Run("error when fewer than 2 migrations before cutoff", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
+		ctx := context.Background()
+		fs := afero.NewOsFs()
 
-		err := fs.MkdirAll(flags.MigrationDir, 0755)
-		require.NoError(t, err)
+		tmpDir := t.TempDir()
+		oldMigrationDir := flags.MigrationDir
+		flags.MigrationDir = tmpDir
+		defer func() { flags.MigrationDir = oldMigrationDir }()
 
 		// Create only 1 old migration
-		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT8 PRIMARY KEY);")
 
 		// Create a recent migration
 		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
-		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT8 PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err := doMigrationSquash(ctx, fs, 720*time.Hour)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "need at least 2 migrations before cutoff")
 	})
 
 	t.Run("error when fewer than 2 total migrations", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
+		ctx := context.Background()
+		fs := afero.NewOsFs()
 
-		err := fs.MkdirAll(flags.MigrationDir, 0755)
-		require.NoError(t, err)
+		tmpDir := t.TempDir()
+		oldMigrationDir := flags.MigrationDir
+		flags.MigrationDir = tmpDir
+		defer func() { flags.MigrationDir = oldMigrationDir }()
 
-		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT8 PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err := doMigrationSquash(ctx, fs, 720*time.Hour)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "need at least 2 migrations to squash")
 	})
 
 	t.Run("squash migration has squash flag set when loaded", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
+		ctx := context.Background()
+		fs := afero.NewOsFs()
 
-		err := fs.MkdirAll(flags.MigrationDir, 0755)
-		require.NoError(t, err)
+		tmpDir := t.TempDir()
+		oldMigrationDir := flags.MigrationDir
+		flags.MigrationDir = tmpDir
+		defer func() { flags.MigrationDir = oldMigrationDir }()
 
 		// Create old migrations
-		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT8 PRIMARY KEY, name STRING NOT NULL);")
 		createMigrationDir(t, fs, "20240201000000_add_email", "ALTER TABLE users ADD COLUMN email STRING;")
 
 		// Create a recent migration
 		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
-		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT PRIMARY KEY);")
+		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT8 PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err := doMigrationSquash(ctx, fs, 720*time.Hour)
 		require.NoError(t, err)
 
 		// Reload migrations and verify squash flag
