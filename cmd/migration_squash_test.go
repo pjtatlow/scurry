@@ -14,6 +14,43 @@ import (
 	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
 )
 
+func TestParseDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		want     time.Duration
+		wantErr  bool
+	}{
+		{name: "days", input: "7d", want: 7 * 24 * time.Hour},
+		{name: "weeks", input: "2w", want: 2 * 7 * 24 * time.Hour},
+		{name: "months", input: "3m", want: 3 * 30 * 24 * time.Hour},
+		{name: "single day", input: "1d", want: 24 * time.Hour},
+		{name: "single month", input: "1m", want: 30 * 24 * time.Hour},
+		{name: "go duration hours", input: "720h", want: 720 * time.Hour},
+		{name: "go duration minutes+seconds", input: "1h30s", want: time.Hour + 30*time.Second},
+		{name: "empty string", input: "", wantErr: true},
+		{name: "invalid number before d", input: "abcd", wantErr: true},
+		{name: "invalid number before w", input: "xw", wantErr: true},
+		{name: "invalid number before m", input: "ym", wantErr: true},
+		{name: "invalid go duration", input: "notaduration", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseDuration(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestParseMigrationTimestamp(t *testing.T) {
 	t.Parallel()
 
@@ -60,7 +97,7 @@ func TestParseMigrationTimestamp(t *testing.T) {
 }
 
 func TestDoMigrationSquash(t *testing.T) {
-	// Not parallel: subtests modify shared globals (flags.Force, squashBefore)
+	// Not parallel: subtests modify shared globals (flags.Force)
 
 	// Helper to create a migration directory with SQL content
 	createMigrationDir := func(t *testing.T, fs afero.Fs, name, sql string) {
@@ -94,11 +131,10 @@ func TestDoMigrationSquash(t *testing.T) {
 		require.Len(t, migrations, 3)
 
 		// Set squash params and run
-		squashBefore = 720 * time.Hour // 30 days
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err = doMigrationSquash(fs, 720*time.Hour)
 		require.NoError(t, err)
 
 		// Verify: old migration dirs should be gone
@@ -148,11 +184,10 @@ func TestDoMigrationSquash(t *testing.T) {
 		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
 		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err = doMigrationSquash(fs, 720*time.Hour)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "need at least 2 migrations before cutoff")
 	})
@@ -165,11 +200,10 @@ func TestDoMigrationSquash(t *testing.T) {
 
 		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err = doMigrationSquash(fs, 720*time.Hour)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "need at least 2 migrations to squash")
 	})
@@ -188,11 +222,10 @@ func TestDoMigrationSquash(t *testing.T) {
 		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
 		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT PRIMARY KEY);")
 
-		squashBefore = 720 * time.Hour
 		flags.Force = true
 		defer func() { flags.Force = false }()
 
-		err = doMigrationSquash(fs)
+		err = doMigrationSquash(fs, 720*time.Hour)
 		require.NoError(t, err)
 
 		// Reload migrations and verify squash flag
