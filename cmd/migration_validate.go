@@ -400,7 +400,15 @@ func applyMigrationsToCleanDatabase(ctx context.Context, migrations []db.Migrati
 		}
 
 		start := time.Now()
-		err = client.ExecuteBulkDDL(ctx, mig.SQL)
+
+		// Split the migration SQL into individual statements before executing.
+		// ExecuteBulkDDL expects individual statements, not a single blob.
+		statements, splitErr := db.SplitStatements(mig.SQL)
+		if splitErr != nil {
+			return nil, fmt.Errorf("failed to parse migration %s: %w", mig.Name, splitErr)
+		}
+
+		err = client.ExecuteBulkDDL(ctx, statements...)
 		duration := time.Since(start)
 
 		if err != nil {
