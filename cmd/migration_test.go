@@ -15,6 +15,35 @@ import (
 	"github.com/pjtatlow/scurry/internal/schema"
 )
 
+func TestSanitizeMigrationName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "clean name", input: "add_users_table", want: "add_users_table"},
+		{name: "slashes", input: "add/users/table", want: "add_users_table"},
+		{name: "backslashes", input: "add\\users\\table", want: "add_users_table"},
+		{name: "spaces", input: "add users table", want: "add_users_table"},
+		{name: "dashes", input: "add-users-table", want: "add_users_table"},
+		{name: "mixed separators", input: "add users/table-name", want: "add_users_table_name"},
+		{name: "consecutive separators", input: "add//users--table", want: "add_users_table"},
+		{name: "leading separator", input: "/add_users", want: "add_users"},
+		{name: "trailing separator", input: "add_users/", want: "add_users"},
+		{name: "all separators", input: "/ - /", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeMigrationName(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestValidateSchemaFile(t *testing.T) {
 	tests := []struct {
 		name          string
