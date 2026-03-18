@@ -18,6 +18,22 @@ jobs:
       - name: Run tests
         run: bazel test //...
 
+  gazelle:
+    name: Gazelle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check BUILD files are up to date
+        run: |
+          bazel run //:gazelle
+          if ! git diff --exit-code; then
+            echo "::error::BUILD files are out of date. Run 'bazel run //:gazelle' and commit the changes."
+            exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
