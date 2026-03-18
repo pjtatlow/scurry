@@ -37,7 +37,7 @@ func init() {
 	rootCmd.AddCommand(pushCmd)
 
 	flags.AddDbUrl(pushCmd)
-	flags.AddDefinitionDir(pushCmd)
+	flags.AddDefinitionDirs(pushCmd)
 
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be executed without applying changes")
 }
@@ -47,7 +47,7 @@ func push(cmd *cobra.Command, args []string) error {
 	if flags.DbUrl == "" {
 		return fmt.Errorf("database URL is required (use --db-url or CRDB_URL env var)")
 	}
-	if flags.DefinitionDir == "" {
+	if len(flags.DefinitionDirs) == 0 {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
@@ -62,12 +62,12 @@ func push(cmd *cobra.Command, args []string) error {
 
 // PushOptions contains options for the push operation
 type PushOptions struct {
-	Fs            afero.Fs
-	DefinitionDir string
-	DbClient      *db.Client
-	Verbose       bool
-	DryRun        bool
-	Force         bool
+	Fs             afero.Fs
+	DefinitionDirs []string
+	DbClient       *db.Client
+	Verbose        bool
+	DryRun         bool
+	Force          bool
 }
 
 // PushResult contains the result of a push operation
@@ -138,12 +138,12 @@ func doPush(ctx context.Context) error {
 	defer client.Close()
 
 	opts := PushOptions{
-		Fs:            afero.NewOsFs(),
-		DefinitionDir: flags.DefinitionDir,
-		DbClient:      client,
-		Verbose:       flags.Verbose,
-		DryRun:        pushDryRun,
-		Force:         flags.Force,
+		Fs:             afero.NewOsFs(),
+		DefinitionDirs: flags.DefinitionDirs,
+		DbClient:       client,
+		Verbose:        flags.Verbose,
+		DryRun:         pushDryRun,
+		Force:          flags.Force,
 	}
 
 	errCtx := &ErrorContext{}
@@ -162,7 +162,7 @@ func doPush(ctx context.Context) error {
 func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*PushResult, error) {
 	// Load local schema from files
 	if opts.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", opts.DefinitionDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", strings.Join(opts.DefinitionDirs, ", "))))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -171,7 +171,7 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, opts.Fs, opts.DefinitionDir, dbClient)
+	localSchema, err := schema.LoadFromDirectories(ctx, opts.Fs, opts.DefinitionDirs, dbClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load local schema: %w", err)
 	}

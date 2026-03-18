@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
@@ -26,12 +27,12 @@ This will try to execute the local schema in a new shadow database to ensure it 
 func init() {
 	rootCmd.AddCommand(validateCmd)
 
-	flags.AddDefinitionDir(validateCmd)
+	flags.AddDefinitionDirs(validateCmd)
 }
 
 func validate(cmd *cobra.Command, args []string) error {
 	// Validate required flags
-	if flags.DefinitionDir == "" {
+	if len(flags.DefinitionDirs) == 0 {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
@@ -48,7 +49,7 @@ func doValidate(ctx context.Context) error {
 
 	// Load local schema from files
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", strings.Join(flags.DefinitionDirs, ", "))))
 	}
 
 	dbClient, err := db.GetShadowDB(ctx)
@@ -57,7 +58,7 @@ func doValidate(ctx context.Context) error {
 	}
 	defer dbClient.Close()
 
-	localSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), flags.DefinitionDir, dbClient)
+	localSchema, err := schema.LoadFromDirectories(ctx, afero.NewOsFs(), flags.DefinitionDirs, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}

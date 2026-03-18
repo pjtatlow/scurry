@@ -39,7 +39,7 @@ Example:
 func init() {
 	generateCmd.AddCommand(generateEnumsCmd)
 
-	flags.AddDefinitionDir(generateEnumsCmd)
+	flags.AddDefinitionDirs(generateEnumsCmd)
 	generateEnumsCmd.Flags().StringVar(&outputDir, "output", "", "Output directory for generated TypeScript files")
 	generateEnumsCmd.MarkFlagRequired("output")
 }
@@ -50,12 +50,12 @@ func generateEnums(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported language %q (supported: ts)", lang)
 	}
 
-	if flags.DefinitionDir == "" {
+	if len(flags.DefinitionDirs) == 0 {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 
 	fs := afero.NewOsFs()
-	count, err := doGenerateEnums(fs, flags.DefinitionDir, outputDir, lang)
+	count, err := doGenerateEnums(fs, flags.DefinitionDirs, outputDir, lang)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
@@ -65,35 +65,37 @@ func generateEnums(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func doGenerateEnums(fs afero.Fs, definitionDir, outDir, lang string) (int, error) {
-	// Walk definition dir and parse SQL files
+func doGenerateEnums(fs afero.Fs, definitionDirs []string, outDir, lang string) (int, error) {
+	// Walk definition dirs and parse SQL files
 	var allStatements []tree.Statement
-	err := afero.Walk(fs, definitionDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
+	for _, definitionDir := range definitionDirs {
+		err := afero.Walk(fs, definitionDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(strings.ToLower(path), ".sql") {
+				return nil
+			}
+
+			content, err := afero.ReadFile(fs, path)
+			if err != nil {
+				return fmt.Errorf("failed to read file %s: %w", path, err)
+			}
+
+			statements, err := schema.ParseSQL(string(content))
+			if err != nil {
+				return fmt.Errorf("in file %s: %w", path, err)
+			}
+
+			allStatements = append(allStatements, statements...)
 			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(path), ".sql") {
-			return nil
-		}
-
-		content, err := afero.ReadFile(fs, path)
+		})
 		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", path, err)
+			return 0, err
 		}
-
-		statements, err := schema.ParseSQL(string(content))
-		if err != nil {
-			return fmt.Errorf("in file %s: %w", path, err)
-		}
-
-		allStatements = append(allStatements, statements...)
-		return nil
-	})
-	if err != nil {
-		return 0, err
 	}
 
 	// Filter for enum types and generate

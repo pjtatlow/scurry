@@ -348,12 +348,12 @@ func TestPushIntegration(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -654,12 +654,12 @@ func TestPushIntegrationComplex(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -713,12 +713,12 @@ func TestPushIntegrationNoChanges(t *testing.T) {
 	require.NoError(t, err)
 
 	opts := PushOptions{
-		Fs:            fs,
-		DefinitionDir: schemaDir,
-		DbClient:      client,
-		Verbose:       false,
-		DryRun:        false,
-		Force:         true,
+		Fs:             fs,
+		DefinitionDirs: []string{schemaDir},
+		DbClient:       client,
+		Verbose:        false,
+		DryRun:         false,
+		Force:          true,
 	}
 
 	// First push
@@ -758,12 +758,12 @@ func TestPushIntegrationDryRun(t *testing.T) {
 	require.NoError(t, err)
 
 	opts := PushOptions{
-		Fs:            fs,
-		DefinitionDir: schemaDir,
-		DbClient:      client,
-		Verbose:       false,
-		DryRun:        true,
-		Force:         true,
+		Fs:             fs,
+		DefinitionDirs: []string{schemaDir},
+		DbClient:       client,
+		Verbose:        false,
+		DryRun:         true,
+		Force:          true,
 	}
 
 	// Dry run push
@@ -1106,12 +1106,12 @@ func TestPushIntegrationColumnTypeChanges(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -1232,12 +1232,12 @@ func TestPushDropColumnWithConstraint(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -1336,12 +1336,12 @@ func TestPushDropColumnWithIndex(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -1441,12 +1441,12 @@ func TestPushAddPartialIndexOnNewColumn(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})
@@ -1585,12 +1585,12 @@ func TestPushRowLevelTTL(t *testing.T) {
 			writeSchemaFiles(tt.initialSchema)
 
 			opts := PushOptions{
-				Fs:            fs,
-				DefinitionDir: schemaDir,
-				DbClient:      client,
-				Verbose:       false,
-				DryRun:        false,
-				Force:         true,
+				Fs:             fs,
+				DefinitionDirs: []string{schemaDir},
+				DbClient:       client,
+				Verbose:        false,
+				DryRun:         false,
+				Force:          true,
 			}
 
 			result, err := executePush(ctx, opts, &ErrorContext{})

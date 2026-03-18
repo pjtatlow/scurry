@@ -117,38 +117,40 @@ func NewSchema(statements ...tree.Statement) *Schema {
 	return schema
 }
 
-// LoadFromDirectory loads schema from SQL files in a directory
-func LoadFromDirectory(ctx context.Context, fs afero.Fs, dirPath string, dbClient *db.Client) (*Schema, error) {
+// LoadFromDirectories loads schema from SQL files across multiple directories
+func LoadFromDirectories(ctx context.Context, fs afero.Fs, dirPaths []string, dbClient *db.Client) (*Schema, error) {
 
 	// 1. Load raw schemas from fs
 	allStatements := make([]tree.Statement, 0)
-	err := afero.Walk(fs, dirPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
+	for _, dirPath := range dirPaths {
+		err := afero.Walk(fs, dirPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(strings.ToLower(path), ".sql") {
+				return nil
+			}
+
+			content, err := afero.ReadFile(fs, path)
+			if err != nil {
+				return fmt.Errorf("failed to read file %s: %w", path, err)
+			}
+
+			sql := string(content)
+			statements, err := parseSQL(sql)
+			if err != nil {
+				return fmt.Errorf("in file %s: %w", path, err)
+			}
+
+			allStatements = append(allStatements, statements...)
 			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(path), ".sql") {
-			return nil
-		}
-
-		content, err := afero.ReadFile(fs, path)
+		})
 		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", path, err)
+			return nil, err
 		}
-
-		sql := string(content)
-		statements, err := parseSQL(sql)
-		if err != nil {
-			return fmt.Errorf("in file %s: %w", path, err)
-		}
-
-		allStatements = append(allStatements, statements...)
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	// 2. Load schemas into a new database
@@ -165,6 +167,11 @@ func LoadFromDirectory(ctx context.Context, fs afero.Fs, dirPath string, dbClien
 
 	// 3. Get standardized create statements from the database
 	return LoadFromDatabase(ctx, dbClient)
+}
+
+// LoadFromDirectory loads schema from SQL files in a directory
+func LoadFromDirectory(ctx context.Context, fs afero.Fs, dirPath string, dbClient *db.Client) (*Schema, error) {
+	return LoadFromDirectories(ctx, fs, []string{dirPath}, dbClient)
 }
 
 // LoadFromDatabase loads schema from all non-system schemas in the database

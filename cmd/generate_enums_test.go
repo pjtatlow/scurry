@@ -111,7 +111,7 @@ CREATE TABLE users (id UUID PRIMARY KEY, status user_status);`,
 				require.NoError(t, afero.WriteFile(fs, path, []byte(content), 0644))
 			}
 
-			count, err := doGenerateEnums(fs, "definitions", "output", "ts")
+			count, err := doGenerateEnums(fs, []string{"definitions"}, "output", "ts")
 			if tt.wantErr {
 				assert.Error(t, err)
 				return

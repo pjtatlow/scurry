@@ -7,11 +7,11 @@ import (
 )
 
 var (
-	Verbose       bool
-	Force         bool
-	MigrationDir  string
-	DefinitionDir string
-	DbUrl         string
+	Verbose        bool
+	Force          bool
+	MigrationDir   string
+	DefinitionDirs []string
+	DbUrl          string
 )
 
 func AddVerbose(cmd *cobra.Command) {
@@ -26,8 +26,12 @@ func AddMigrationDir(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&MigrationDir, "migrations", coalesceDefaults(os.Getenv("MIGRATION_DIR"), "./migrations"), "Directory containing migration files")
 }
 
-func AddDefinitionDir(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&DefinitionDir, "definitions", coalesceDefaults(os.Getenv("DEFINITION_DIR"), "./definitions"), "Directory containing schema definition files")
+func AddDefinitionDirs(cmd *cobra.Command) {
+	defaultDirs := []string{"./definitions"}
+	if envDir := os.Getenv("DEFINITION_DIR"); envDir != "" {
+		defaultDirs = []string{envDir}
+	}
+	cmd.Flags().StringArrayVar(&DefinitionDirs, "definitions", defaultDirs, "Directories containing schema definition files (can be specified multiple times)")
 }
 
 func AddDbUrl(cmd *cobra.Command) {

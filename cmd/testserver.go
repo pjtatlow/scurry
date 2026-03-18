@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
@@ -29,7 +30,7 @@ var (
 func init() {
 	rootCmd.AddCommand(testserverCmd)
 
-	flags.AddDefinitionDir(testserverCmd)
+	flags.AddDefinitionDirs(testserverCmd)
 
 	testserverCmd.Flags().StringVar(&urlFile, "url-file", "", "File to write the database URL to when it's ready")
 	testserverCmd.Flags().StringVar(&db.TestServerHost, "host", "", "Host address for the test database server")
@@ -41,7 +42,7 @@ func runTestserver(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// Validate required flags
-	if flags.DefinitionDir == "" {
+	if len(flags.DefinitionDirs) == 0 {
 		return fmt.Errorf("definition directory is required (use --definitions)")
 	}
 	if urlFile == "" {
@@ -73,9 +74,9 @@ func doTestserver(ctx context.Context, urlFile string) error {
 
 	// Load local schema
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", flags.DefinitionDir)))
+		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", strings.Join(flags.DefinitionDirs, ", "))))
 	}
-	testSchema, err := schema.LoadFromDirectory(ctx, afero.NewOsFs(), flags.DefinitionDir, dbClient)
+	testSchema, err := schema.LoadFromDirectories(ctx, afero.NewOsFs(), flags.DefinitionDirs, dbClient)
 	if err != nil {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
