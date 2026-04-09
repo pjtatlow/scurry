@@ -279,6 +279,11 @@ func handleColumnTypeChanges(
 					&tree.AlterTableAlterColumnType{
 						Column: localCol.Name,
 						ToType: localCol.Type,
+						Using: &tree.CastExpr{
+							Expr:       tree.NewUnresolvedName(string(localCol.Name)),
+							Type:       localCol.Type,
+							SyntaxMode: tree.CastShort,
+						},
 					},
 				},
 			},
