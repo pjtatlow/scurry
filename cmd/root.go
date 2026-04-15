@@ -11,6 +11,7 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	"github.com/pjtatlow/scurry/internal/ui"
 )
 
 var (
@@ -25,6 +26,11 @@ var rootCmd = &cobra.Command{
 	Long: `Scurry is a CLI tool for managing CockroachDB database schemas.
 It allows you to define your database schema in SQL files and keep them in sync with your database.`,
 	SilenceUsage: true, // Don't print usage on runtime errors (only on argument validation errors)
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if flags.NoColor || isNoColorEnv() {
+			ui.SetNoColor(true)
+		}
+	},
 }
 
 func Execute() error {
@@ -57,10 +63,18 @@ func Execute() error {
 	return rootCmd.ExecuteContext(ctx)
 }
 
+// isNoColorEnv checks for the NO_COLOR env var per https://no-color.org/
+// The variable being set to any value (including empty) disables color.
+func isNoColorEnv() bool {
+	_, exists := os.LookupEnv("NO_COLOR")
+	return exists
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&db.CrdbVersion, "crdb-version", os.Getenv("CRDB_VERSION"), "CockroachDB version, defaults to latest.")
 
 	flags.AddVerbose(rootCmd)
 	flags.AddForce(rootCmd)
+	flags.AddNoColor(rootCmd)
 }

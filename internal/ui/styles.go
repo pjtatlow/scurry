@@ -13,6 +13,13 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
+var noColor bool
+
+// SetNoColor disables all color and style output when set to true.
+func SetNoColor(v bool) {
+	noColor = v
+}
+
 var (
 	// Colors
 	Text   = lipgloss.Color("#cdd6f4")
@@ -71,50 +78,80 @@ var (
 
 // Error returns red, bold error text
 func Error(text string) string {
+	if noColor {
+		return text
+	}
 	return ErrorStyle.Render(text)
 }
 
 // Warning returns yellow, bold warning text
 func Warning(text string) string {
+	if noColor {
+		return text
+	}
 	return WarningStyle.Render(text)
 }
 
 // Success returns green, bold success text
 func Success(text string) string {
+	if noColor {
+		return text
+	}
 	return SuccessStyle.Render(text)
 }
 
 // Info returns blue info text
 func Info(text string) string {
+	if noColor {
+		return text
+	}
 	return InfoStyle.Render(text)
 }
 
 // Subtle returns gray subtle text
 func Subtle(text string) string {
+	if noColor {
+		return text
+	}
 	return SubtleStyle.Render(text)
 }
 
 // Destructive returns red, bold text for destructive operations
 func Destructive(text string) string {
+	if noColor {
+		return text
+	}
 	return DestructiveStyle.Render(text)
 }
 
 // Header returns bold, underlined header text
 func Header(text string) string {
+	if noColor {
+		return text
+	}
 	return HeaderStyle.Render(text)
 }
 
 // WarningBanner creates a red bordered warning box
 func WarningBanner(text string) string {
+	if noColor {
+		return text
+	}
 	return WarningBannerStyle.Render(text)
 }
 
 // SuccessBanner creates a green bordered success box
 func SuccessBanner(text string) string {
+	if noColor {
+		return text
+	}
 	return SuccessBannerStyle.Render(text)
 }
 
 func SqlCode(text string) string {
+	if noColor {
+		return text
+	}
 	lexer := lexers.Get("postgresql")
 	iterator, err := lexer.Tokenise(nil, text)
 	if err != nil {

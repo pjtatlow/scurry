@@ -9,6 +9,7 @@ import (
 var (
 	Verbose        bool
 	Force          bool
+	NoColor        bool
 	MigrationDir   string
 	DefinitionDirs []string
 	DbUrl          string
@@ -20,6 +21,10 @@ func AddVerbose(cmd *cobra.Command) {
 
 func AddForce(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVar(&Force, "force", false, "Do not prompt user for confirmation or input")
+}
+
+func AddNoColor(cmd *cobra.Command) {
+	cmd.PersistentFlags().BoolVar(&NoColor, "no-color", false, "Disable colored output (also respects NO_COLOR env var)")
 }
 
 func AddMigrationDir(cmd *cobra.Command) {
