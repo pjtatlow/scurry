@@ -449,6 +449,136 @@ func TestMigrationOrderingAddComputedColumnDependency(t *testing.T) {
 	}
 }
 
+func TestMigrationOrderingDropIndexBeforeDropColumnPartialPredicate(t *testing.T) {
+	// Regression test: when multiple columns are dropped and one of them is referenced
+	// in a partial index's WHERE predicate, the DROP INDEX must run before the
+	// DROP COLUMN in the final migration output. Prior behavior prepended DROP INDEX
+	// to only one column-drop diff; alphabetical sort by leading statement could place
+	// that group after other ALTER TABLE DROP COLUMN groups, so DROP COLUMN ran first
+	// and CockroachDB errored: "cannot drop column because it is referenced by
+	// partial index".
+	tests := []struct {
+		name         string
+		remoteTables []string
+		localTables  []string
+		// wantOrder specifies substrings that must appear in order in the migration output
+		wantOrder []string
+	}{
+		{
+			name: "drop many columns; one referenced by partial index predicate",
+			remoteTables: []string{
+				`CREATE TABLE progress (
+					id INT NOT NULL,
+					keep_me STRING,
+					churn_count INT,
+					churned_at TIMESTAMPTZ,
+					deal_size_bucket STRING,
+					first_revenue_at TIMESTAMPTZ,
+					hubspot_deal_id STRING,
+					is_test_or_internal BOOL,
+					last_revenue_at TIMESTAMPTZ,
+					revenue_generating BOOL,
+					CONSTRAINT progress_pkey PRIMARY KEY (id),
+					INDEX progress_churned_at_idx (churned_at ASC) WHERE churned_at IS NOT NULL
+				)`,
+			},
+			localTables: []string{
+				"CREATE TABLE progress (id INT NOT NULL, keep_me STRING, CONSTRAINT progress_pkey PRIMARY KEY (id))",
+			},
+			// DROP INDEX must come before the DROP COLUMN for churned_at.
+			wantOrder: []string{"DROP INDEX", "progress_churned_at_idx", "DROP COLUMN", "churned_at"},
+		},
+		{
+			name: "drop many columns; two separate partial indexes on two different columns",
+			remoteTables: []string{
+				`CREATE TABLE progress (
+					id INT NOT NULL,
+					keep_me STRING,
+					churn_count INT,
+					churned_at TIMESTAMPTZ,
+					deal_size_bucket STRING,
+					first_revenue_at TIMESTAMPTZ,
+					hubspot_deal_id STRING,
+					is_test_or_internal BOOL,
+					last_revenue_at TIMESTAMPTZ,
+					revenue_generating BOOL,
+					CONSTRAINT progress_pkey PRIMARY KEY (id),
+					INDEX progress_churned_at_idx (churned_at ASC) WHERE churned_at IS NOT NULL,
+					INDEX progress_hubspot_deal_id_idx (hubspot_deal_id ASC) WHERE hubspot_deal_id IS NOT NULL
+				)`,
+			},
+			localTables: []string{
+				"CREATE TABLE progress (id INT NOT NULL, keep_me STRING, CONSTRAINT progress_pkey PRIMARY KEY (id))",
+			},
+			// Specific DROP INDEX / DROP COLUMN pairings are asserted in the test
+			// body; wantOrder just confirms both DROP INDEX statements exist.
+			wantOrder: []string{"DROP INDEX", "DROP INDEX"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// The bug depends on Go's randomized map iteration order: the incorrect
+			// output only surfaces for some iterations. Run the scenario many times
+			// so any flaky-looking failure still gets caught.
+			const iterations = 50
+			for i := 0; i < iterations; i++ {
+				localSchema := createSchemaWithTypesAndTables(nil, tt.localTables)
+				remoteSchema := createSchemaWithTypesAndTables(nil, tt.remoteTables)
+
+				diffResult := Compare(localSchema, remoteSchema)
+
+				if !diffResult.HasChanges() {
+					t.Fatal("expected changes but got none")
+				}
+
+				migrations, _, err := diffResult.GenerateMigrations(false)
+				if err != nil {
+					t.Fatalf("GenerateMigrations() error: %v", err)
+				}
+
+				allDDL := strings.Join(migrations, "\n")
+
+				// For each partial-index-predicate column, DROP INDEX must come before
+				// the matching DROP COLUMN.
+				if strings.Contains(allDDL, "progress_churned_at_idx") {
+					dropIdx := strings.Index(allDDL, "progress_churned_at_idx")
+					colIdx := strings.Index(allDDL, "churned_at RESTRICT")
+					if colIdx == -1 {
+						t.Fatalf("iter %d: expected to find DROP COLUMN for churned_at:\n%s", i, allDDL)
+					}
+					if dropIdx > colIdx {
+						t.Fatalf("iter %d: DROP INDEX progress_churned_at_idx must appear before DROP COLUMN churned_at.\n"+
+							"DROP INDEX at %d, DROP COLUMN at %d\nGot:\n%s", i, dropIdx, colIdx, allDDL)
+					}
+				}
+				if strings.Contains(allDDL, "progress_hubspot_deal_id_idx") {
+					dropIdx := strings.Index(allDDL, "progress_hubspot_deal_id_idx")
+					colIdx := strings.Index(allDDL, "hubspot_deal_id RESTRICT")
+					if colIdx == -1 {
+						t.Fatalf("iter %d: expected to find DROP COLUMN for hubspot_deal_id:\n%s", i, allDDL)
+					}
+					if dropIdx > colIdx {
+						t.Fatalf("iter %d: DROP INDEX progress_hubspot_deal_id_idx must appear before DROP COLUMN hubspot_deal_id.\n"+
+							"DROP INDEX at %d, DROP COLUMN at %d\nGot:\n%s", i, dropIdx, colIdx, allDDL)
+					}
+				}
+
+				lastIndex := -1
+				for _, want := range tt.wantOrder {
+					index := strings.Index(allDDL[lastIndex+1:], want)
+					if index == -1 {
+						t.Fatalf("iter %d: expected %q to appear in migration output after position %d.\nGot:\n%s", i, want, lastIndex, allDDL)
+					}
+					index = lastIndex + 1 + index
+					lastIndex = index
+				}
+			}
+		})
+	}
+}
+
 func TestPartialIndexWhereClauseColumnDependencies(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -284,6 +284,47 @@ func TestPushIntegration(t *testing.T) {
 			expectedStmts:     []string{"DROP INDEX", "runs_account_idempotency", "DROP COLUMN", "idempotency_key"},
 		},
 		{
+			// Regression for scurry-push-error-1764516677: dropping many columns in the
+			// same migration where one is referenced in a partial index WHERE clause.
+			// Prior to the fix, the DROP COLUMN for the predicate column could be
+			// emitted before the DROP INDEX, causing CockroachDB to error with
+			// "cannot drop column ... because it is referenced by partial index".
+			name: "drop many columns; partial index predicate column among them",
+			initialSchema: map[string]string{
+				"tables/progress.sql": `
+					CREATE TABLE progress (
+						id INT PRIMARY KEY,
+						keep_me STRING,
+						churn_count INT,
+						churned_at TIMESTAMPTZ,
+						deal_size_bucket STRING,
+						first_revenue_at TIMESTAMPTZ,
+						hubspot_deal_id STRING,
+						is_test_or_internal BOOL,
+						last_revenue_at TIMESTAMPTZ,
+						revenue_generating BOOL,
+						INDEX progress_churned_at_idx (churned_at ASC) WHERE churned_at IS NOT NULL,
+						INDEX progress_hubspot_deal_id_idx (hubspot_deal_id ASC) WHERE hubspot_deal_id IS NOT NULL
+					);
+				`,
+			},
+			updatedSchema: map[string]string{
+				"tables/progress.sql": `
+					CREATE TABLE progress (
+						id INT PRIMARY KEY,
+						keep_me STRING
+					);
+				`,
+			},
+			// 2 DROP INDEX + 8 DROP COLUMN
+			expectedStmtCount: 10,
+			expectedStmts: []string{
+				"DROP INDEX", "progress_churned_at_idx",
+				"DROP INDEX", "progress_hubspot_deal_id_idx",
+				"DROP COLUMN", "churned_at",
+			},
+		},
+		{
 			name: "multiple changes",
 			initialSchema: map[string]string{
 				"tables/users.sql": `

@@ -1126,7 +1126,7 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 				is_active BOOL,
 				INDEX idx_active_users (name) WHERE is_active = true
 			)`,
-			wantDiffCount:   1,
+			wantDiffCount:   2,
 			wantDDLContains: []string{"DROP INDEX", "idx_active_users", "DROP COLUMN"},
 		},
 		{
@@ -1137,7 +1137,7 @@ func TestRemoveIndexesOnDroppedColumns(t *testing.T) {
 				email STRING,
 				UNIQUE INDEX idx_email (email) WHERE email IS NOT NULL
 			)`,
-			wantDiffCount:   1,
+			wantDiffCount:   2,
 			wantDDLContains: []string{"DROP INDEX", "idx_email", "DROP COLUMN"},
 		},
 	}
