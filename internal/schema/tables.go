@@ -5,6 +5,8 @@ import (
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/types"
+
+	"github.com/pjtatlow/scurry/internal/set"
 )
 
 // compareTables finds differences in tables
@@ -132,6 +134,15 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 		}
 	}
 
+	// Compute the set of dropped columns once so the predicate-index and
+	// column-drop helpers stay in sync.
+	droppedCols := make(map[string]bool)
+	for colName := range remoteComponents.columns {
+		if _, existsInLocal := localComponents.columns[colName]; !existsInLocal {
+			droppedCols[colName] = true
+		}
+	}
+
 	// Remove indexes on dropped columns before comparing.
 	// Indexes where the dropped column is in key/storing columns are auto-dropped by CockroachDB.
 	// Indexes where the dropped column is only in the WHERE predicate need explicit DROP INDEX.
@@ -147,18 +158,22 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	// Compare remaining columns (type changes already handled above)
 	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
 
-	// For indexes that reference dropped columns only in their WHERE predicate,
-	// prepend DROP INDEX statements to the column drop diffs so they execute first.
+	// For partial indexes that reference dropped columns in their WHERE predicate,
+	// emit standalone DROP INDEX diffs whose OriginalDependencies point at the
+	// affected columns. The topological sort in GenerateMigrations uses those deps
+	// (via the dropStatements map) to ensure DROP INDEX runs before DROP COLUMN.
+	var dropIndexDiffs []Difference
 	if len(predicateOnlyIndexes) > 0 {
-		prependDropIndexesToColumnDrops(predicateOnlyIndexes, columnDiffs, local.Table)
+		dropIndexDiffs = append(dropIndexDiffs, buildDropIndexDiffsForDroppedColumns(predicateOnlyIndexes, local.Table, droppedCols)...)
 	}
-
-	// For unique constraints that reference dropped columns in their WHERE predicate,
-	// prepend DROP INDEX statements to the column drop diffs so they execute first.
 	if len(predicateUniqueConstraints) > 0 {
-		prependDropUniqueConstraintIndexesToColumnDrops(predicateUniqueConstraints, columnDiffs, local.Table)
+		dropIndexDiffs = append(dropIndexDiffs, buildDropUniqueConstraintIndexDiffsForDroppedColumns(predicateUniqueConstraints, local.Table, droppedCols)...)
 	}
 
+	// Emit DROP INDEX diffs before the DROP COLUMN diffs so the diff list alone
+	// is readable in predictable order. Final ordering is driven by the dependency
+	// graph in GenerateMigrations, not by this append order.
+	diffs = append(diffs, dropIndexDiffs...)
 	diffs = append(diffs, columnDiffs...)
 
 	// Compare remaining indexes
@@ -1035,70 +1050,82 @@ func removeIndexesOnDroppedColumns(localColumns, remoteColumns map[string]*tree.
 	return predicateOnlyIndexes
 }
 
-// prependDropIndexesToColumnDrops adds DROP INDEX statements before DROP COLUMN
-// statements in the given diffs. This handles the case where a partial index
-// references a dropped column only in its WHERE predicate — CockroachDB does not
-// auto-drop these indexes when the column is dropped with RESTRICT.
-func prependDropIndexesToColumnDrops(indexes map[string]*tree.IndexTableDef, diffs []Difference, tableRef tree.TableName) {
+// buildDropIndexDiffsForDroppedColumns emits one Difference per partial index
+// that must be explicitly dropped before columns it references are dropped.
+// Each Difference sets OriginalDependencies to the qualified column names the
+// index depends on; GenerateMigrations uses those to order the DROP INDEX ahead
+// of the matching DROP COLUMN via the shared dependency graph.
+func buildDropIndexDiffsForDroppedColumns(indexes map[string]*tree.IndexTableDef, tableRef tree.TableName, droppedCols map[string]bool) []Difference {
 	if len(indexes) == 0 {
-		return
+		return nil
 	}
-
-	// Build DROP INDEX statements for all predicate-only indexes
-	var dropStmts []tree.Statement
-	for indexName := range indexes {
-		dropStmts = append(dropStmts, &tree.DropIndex{
-			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(indexName)}},
-			DropBehavior: tree.DropRestrict,
+	schemaName, tableName := getTableName(tableRef)
+	diffs := make([]Difference, 0, len(indexes))
+	for indexName, idx := range indexes {
+		deps := collectDroppedColumnDeps(schemaName, tableName, idx.Predicate, getIndexKeyAndStoringColumnNames(idx), droppedCols)
+		diffs = append(diffs, Difference{
+			Type:        DiffTypeTableModified,
+			ObjectName:  tableName,
+			Description: fmt.Sprintf("Index '%s.%s' dropped (referenced column being dropped)", tableName, indexName),
+			MigrationStatements: []tree.Statement{
+				&tree.DropIndex{
+					IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(indexName)}},
+					DropBehavior: tree.DropRestrict,
+				},
+			},
+			OriginalDependencies: deps,
 		})
 	}
-
-	// Find the first column-removal diff and prepend the DROP INDEX statements
-	for i, diff := range diffs {
-		for _, stmt := range diff.MigrationStatements {
-			if at, ok := stmt.(*tree.AlterTable); ok {
-				for _, cmd := range at.Cmds {
-					if _, ok := cmd.(*tree.AlterTableDropColumn); ok {
-						diffs[i].MigrationStatements = append(dropStmts, diffs[i].MigrationStatements...)
-						return
-					}
-				}
-			}
-		}
-	}
+	return diffs
 }
 
-// prependDropUniqueConstraintIndexesToColumnDrops adds DROP INDEX statements before
-// DROP COLUMN statements for partial unique constraints that reference dropped columns
-// in their WHERE predicate. CockroachDB does not auto-drop these when the column is dropped.
-func prependDropUniqueConstraintIndexesToColumnDrops(constraints map[string]*tree.UniqueConstraintTableDef, diffs []Difference, tableRef tree.TableName) {
+// buildDropUniqueConstraintIndexDiffsForDroppedColumns is the unique-constraint
+// counterpart to buildDropIndexDiffsForDroppedColumns. Uses DropCascade because
+// the index backs a unique constraint.
+func buildDropUniqueConstraintIndexDiffsForDroppedColumns(constraints map[string]*tree.UniqueConstraintTableDef, tableRef tree.TableName, droppedCols map[string]bool) []Difference {
 	if len(constraints) == 0 {
-		return
+		return nil
 	}
-
-	// Build DROP INDEX statements for all predicate unique constraints.
-	// Must use CASCADE because the index backs a unique constraint.
-	var dropStmts []tree.Statement
-	for constraintName := range constraints {
-		dropStmts = append(dropStmts, &tree.DropIndex{
-			IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(constraintName)}},
-			DropBehavior: tree.DropCascade,
+	schemaName, tableName := getTableName(tableRef)
+	diffs := make([]Difference, 0, len(constraints))
+	for constraintName, uc := range constraints {
+		deps := collectDroppedColumnDeps(schemaName, tableName, uc.Predicate, getUniqueConstraintColumnNames(uc), droppedCols)
+		diffs = append(diffs, Difference{
+			Type:        DiffTypeTableModified,
+			ObjectName:  tableName,
+			Description: fmt.Sprintf("Unique constraint index '%s.%s' dropped (referenced column being dropped)", tableName, constraintName),
+			MigrationStatements: []tree.Statement{
+				&tree.DropIndex{
+					IndexList:    tree.TableIndexNames{{Table: tableRef, Index: tree.UnrestrictedName(constraintName)}},
+					DropBehavior: tree.DropCascade,
+				},
+			},
+			OriginalDependencies: deps,
 		})
 	}
+	return diffs
+}
 
-	// Find the first column-removal diff and prepend the DROP INDEX statements
-	for i, diff := range diffs {
-		for _, stmt := range diff.MigrationStatements {
-			if at, ok := stmt.(*tree.AlterTable); ok {
-				for _, cmd := range at.Cmds {
-					if _, ok := cmd.(*tree.AlterTableDropColumn); ok {
-						diffs[i].MigrationStatements = append(dropStmts, diffs[i].MigrationStatements...)
-						return
-					}
-				}
-			}
+// collectDroppedColumnDeps returns the set of qualified column names
+// (schema.table.column) for columns being dropped that are referenced by the
+// given predicate or key/storing columns. Used to link a DROP INDEX to the
+// DROP COLUMN statements that must run after it.
+func collectDroppedColumnDeps(schemaName, tableName string, predicate tree.Expr, keyCols []string, droppedCols map[string]bool) set.Set[string] {
+	deps := set.New[string]()
+	addIfDropped := func(col string) {
+		if droppedCols[col] {
+			deps.Add(schemaName + "." + tableName + "." + col)
 		}
 	}
+	if predicate != nil {
+		for _, col := range getCheckConstraintColumns(predicate) {
+			addIfDropped(col)
+		}
+	}
+	for _, col := range keyCols {
+		addIfDropped(col)
+	}
+	return deps
 }
 
 // addPartialIndexTransactionBoundaries prepends COMMIT/BEGIN to any CREATE INDEX

@@ -109,6 +109,16 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 					schemaName, routineName := getRoutineName(routine.FuncName)
 					dropStatements.add(schemaName+"."+routineName, stmt)
 				}
+			case *tree.AlterTable:
+				// ALTER TABLE ... DROP COLUMN registers the qualified column name so
+				// that a separate DROP INDEX diff with OriginalDependencies pointing
+				// at the column forces itself to run before this drop.
+				schemaName, tableName := getObjectName(d.Table)
+				for _, cmd := range d.Cmds {
+					if dropCol, ok := cmd.(*tree.AlterTableDropColumn); ok {
+						dropStatements.add(schemaName+"."+tableName+"."+dropCol.Column.Normalize(), stmt)
+					}
+				}
 			}
 		}
 	}
