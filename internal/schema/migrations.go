@@ -27,6 +27,19 @@ func (dm dependencyMap) add(name string, stmt *migrationStatement) {
 }
 
 func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, error) {
+	// Refuse to generate a migration if any differences are flagged as
+	// unrepresentable in DDL (e.g. column-family changes on existing columns).
+	// Reporting all of them at once avoids a fix-one-find-another loop.
+	var blockingErrors []string
+	for _, d := range r.Differences {
+		if d.BlockingError != "" {
+			blockingErrors = append(blockingErrors, d.BlockingError)
+		}
+	}
+	if len(blockingErrors) > 0 {
+		return nil, nil, fmt.Errorf("schema change cannot be applied:\n  - %s", strings.Join(blockingErrors, "\n  - "))
+	}
+
 	statements := make([]*migrationStatement, 0)
 	warnings := make([]string, 0)
 	// Multiple statements can provide the same name, like functions with overloads

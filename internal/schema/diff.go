@@ -48,6 +48,11 @@ type Difference struct {
 	IsDropCreate         bool
 	MigrationStatements  []tree.Statement
 	OriginalDependencies set.Set[string] // For DROP ordering: what the dropped object depended on
+
+	// BlockingError, when non-empty, indicates a difference that scurry cannot
+	// express as DDL. GenerateMigrations refuses to produce migrations while any
+	// blocking errors are present and reports them to the user instead.
+	BlockingError string
 }
 
 // ComparisonResult holds all differences between two schemas
