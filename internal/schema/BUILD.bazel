@@ -6,6 +6,7 @@ go_library(
         "dependencies.go",
         "diff.go",
         "expressions.go",
+        "families.go",
         "format.go",
         "migrations.go",
         "names.go",

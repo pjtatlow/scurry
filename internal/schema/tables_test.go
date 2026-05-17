@@ -1274,3 +1274,143 @@ func TestCompareStorageParams(t *testing.T) {
 		})
 	}
 }
+
+func TestColumnFamilies(t *testing.T) {
+	tests := []struct {
+		name               string
+		localTable         string
+		remoteTable        string
+		wantDiffCount      int
+		wantDDLContains    []string
+		wantDDLNotContain  []string
+		wantBlockingSubstr string
+	}{
+		{
+			name:          "matching families - no diff",
+			localTable:    "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id, a), FAMILY f2 (b))",
+			remoteTable:   "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id, a), FAMILY f2 (b))",
+			wantDiffCount: 0,
+		},
+		{
+			name:          "no families on either side - no diff",
+			localTable:    "CREATE TABLE t (id INT PRIMARY KEY, a STRING)",
+			remoteTable:   "CREATE TABLE t (id INT PRIMARY KEY, a STRING)",
+			wantDiffCount: 0,
+		},
+		{
+			name:               "family changed on existing column - blocking, no SQL",
+			localTable:         "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id, a), FAMILY f2 (b))",
+			remoteTable:        "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id), FAMILY f2 (a, b))",
+			wantDiffCount:      1,
+			wantBlockingSubstr: "does not support changing a column's family",
+		},
+		{
+			name:               "family added to existing column - blocking",
+			localTable:         "CREATE TABLE t (id INT PRIMARY KEY, a STRING, FAMILY f1 (id, a))",
+			remoteTable:        "CREATE TABLE t (id INT PRIMARY KEY, a STRING)",
+			wantDiffCount:      2,
+			wantBlockingSubstr: "does not support changing a column's family",
+		},
+		{
+			name:            "new column with existing family - ADD COLUMN includes FAMILY",
+			localTable:      "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id), FAMILY f2 (a, b))",
+			remoteTable:     "CREATE TABLE t (id INT PRIMARY KEY, a STRING, FAMILY f1 (id), FAMILY f2 (a))",
+			wantDiffCount:   1,
+			wantDDLContains: []string{"ADD COLUMN", "b", "FAMILY f2"},
+		},
+		{
+			name:            "new column with new family - ADD COLUMN includes CREATE FAMILY",
+			localTable:      "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id, a), FAMILY f2 (b))",
+			remoteTable:     "CREATE TABLE t (id INT PRIMARY KEY, a STRING, FAMILY f1 (id, a))",
+			wantDiffCount:   1,
+			wantDDLContains: []string{"ADD COLUMN", "b", "CREATE", "FAMILY f2"},
+		},
+		{
+			name:               "new column without family but table has families - blocking for orphaned existing columns",
+			localTable:         "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING)",
+			remoteTable:        "CREATE TABLE t (id INT PRIMARY KEY, a STRING, FAMILY f1 (id, a))",
+			wantDiffCount:      3,
+			wantBlockingSubstr: "does not support changing a column's family",
+		},
+		{
+			name:              "default primary family explicit locally normalizes away",
+			localTable:        "CREATE TABLE t (id INT PRIMARY KEY, a STRING)",
+			remoteTable:       "CREATE TABLE t (id INT PRIMARY KEY, a STRING)",
+			wantDiffCount:     0,
+			wantDDLNotContain: []string{"FAMILY"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			localSchema := createSchemaWithTables([]string{tt.localTable})
+			remoteSchema := createSchemaWithTables([]string{tt.remoteTable})
+
+			diffs := compareTables(localSchema, remoteSchema)
+
+			if len(diffs) != tt.wantDiffCount {
+				t.Fatalf("expected %d diff(s), got %d:\n%+v", tt.wantDiffCount, len(diffs), diffs)
+			}
+
+			var allDDL string
+			var allBlocking string
+			for _, d := range diffs {
+				allDDL += "\n" + strings.Join(statementsToStringsTables(d.MigrationStatements), "\n")
+				if d.BlockingError != "" {
+					allBlocking += d.BlockingError + "\n"
+				}
+			}
+
+			for _, expected := range tt.wantDDLContains {
+				if !strings.Contains(allDDL, expected) {
+					t.Errorf("DDL should contain %q.\nGot:\n%s", expected, allDDL)
+				}
+			}
+			for _, notExpected := range tt.wantDDLNotContain {
+				if strings.Contains(allDDL, notExpected) {
+					t.Errorf("DDL should NOT contain %q.\nGot:\n%s", notExpected, allDDL)
+				}
+			}
+			if tt.wantBlockingSubstr != "" {
+				if !strings.Contains(allBlocking, tt.wantBlockingSubstr) {
+					t.Errorf("blocking errors should contain %q.\nGot:\n%s", tt.wantBlockingSubstr, allBlocking)
+				}
+				// Confirm GenerateMigrations refuses to produce migrations.
+				result := &ComparisonResult{Differences: diffs}
+				if _, _, err := result.GenerateMigrations(false); err == nil {
+					t.Errorf("expected GenerateMigrations to error on blocking diffs, got nil")
+				}
+			}
+		})
+	}
+}
+
+func TestColumnFamilyMigrationApplies(t *testing.T) {
+	// End-to-end check: an ADD COLUMN with a new family should produce SQL that
+	// CockroachDB actually accepts on the remote table.
+	ctx := context.Background()
+
+	remoteSQL := "CREATE TABLE t (id INT PRIMARY KEY, a STRING, FAMILY f1 (id, a))"
+	localSQL := "CREATE TABLE t (id INT PRIMARY KEY, a STRING, b STRING, FAMILY f1 (id, a), FAMILY f2 (b))"
+
+	remoteSchema := createSchemaWithTables([]string{remoteSQL})
+	localSchema := createSchemaWithTables([]string{localSQL})
+
+	diffs := compareTables(localSchema, remoteSchema)
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d:\n%+v", len(diffs), diffs)
+	}
+
+	migration := diffs[0].MigrationStatements[0].String()
+
+	// Run the migration on a fresh shadow DB that already has the remote table.
+	client, err := db.GetShadowDB(ctx, remoteSQL)
+	if err != nil {
+		t.Fatalf("GetShadowDB failed: %v", err)
+	}
+	defer client.Close()
+	if err := client.ExecuteBulkDDL(ctx, migration); err != nil {
+		t.Fatalf("generated migration %q failed: %v", migration, err)
+	}
+}

@@ -155,8 +155,13 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	// explicit DROP INDEX statements, returned separately.
 	predicateUniqueConstraints := removeConstraintsOnDroppedColumns(localComponents.columns, remoteComponents.columns, remoteComponents.constraints)
 
-	// Compare remaining columns (type changes already handled above)
-	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns)
+	// Compare remaining columns (type changes already handled above).
+	// Family info is passed in so new ADD COLUMN statements include the FAMILY
+	// clause; CockroachDB's normalized AST stores family membership in
+	// FamilyTableDef entries rather than on the ColumnTableDef.
+	localFamilies := buildColumnFamilyMap(local)
+	remoteFamilyNamesSet := remoteFamilyNames(remote)
+	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns, localFamilies, remoteFamilyNamesSet)
 
 	// For partial indexes that reference dropped columns in their WHERE predicate,
 	// emit standalone DROP INDEX diffs whose OriginalDependencies point at the
@@ -206,7 +211,8 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	storageParamDiffs := compareStorageParams(tableName, local.Table, local.StorageParams, remote.StorageParams)
 	diffs = append(diffs, storageParamDiffs...)
 
-	// TODO: Compare column families
+	familyDiffs := compareFamilies(tableName, local, remote, localComponents.columns, remoteComponents.columns)
+	diffs = append(diffs, familyDiffs...)
 
 	return diffs
 }
@@ -357,7 +363,7 @@ func handleColumnTypeChanges(
 }
 
 // compareColumns finds differences in table columns.
-func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef) []Difference {
+func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef, localFamilies map[string]string, remoteFamilies map[string]bool) []Difference {
 	diffs := make([]Difference, 0)
 
 	// Skip the crdb_internal_expiration column - this is managed automatically by CockroachDB
@@ -375,11 +381,12 @@ func compareColumns(tableName string, tableRef tree.TableName, localCols, remote
 			if requiredWithoutDefault {
 				warningMessage = fmt.Sprintf("Column '%s.%s' is non-nullable but has no default value. Will fail to add column if the table is not empty.", tableName, colName)
 			}
+			addColumnDef := applyColumnFamilyForAdd(localCol, localFamilies[colName], remoteFamilies[localFamilies[colName]])
 			createColumn := &tree.AlterTable{
 				Table: tableRef.ToUnresolvedObjectName(),
 				Cmds: tree.AlterTableCmds{
 					&tree.AlterTableAddColumn{
-						ColumnDef: localCol,
+						ColumnDef: addColumnDef,
 					},
 				},
 			}
