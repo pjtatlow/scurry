@@ -14,6 +14,7 @@ func TestDoGenerateEnums(t *testing.T) {
 	tests := []struct {
 		name          string
 		files         map[string]string
+		zod           bool
 		expectedCount int
 		expectedFiles map[string]string
 		wantErr       bool
@@ -30,6 +31,27 @@ func TestDoGenerateEnums(t *testing.T) {
   Inactive = "inactive",
   PendingReview = "pending_review",
 }
+`,
+			},
+		},
+		{
+			name: "zod enum type",
+			files: map[string]string{
+				"definitions/types.sql": "CREATE TYPE status AS ENUM ('Pending', 'Approved', 'Rejected');",
+			},
+			zod:           true,
+			expectedCount: 1,
+			expectedFiles: map[string]string{
+				"output/status.ts": `import * as z from "zod/v4";
+
+export const StatusValues = [
+  "Pending",
+  "Approved",
+  "Rejected",
+] as const;
+export const StatusSchema = z.enum(StatusValues);
+export const Status = StatusSchema.enum;
+export type Status = z.infer<typeof StatusSchema>;
 `,
 			},
 		},
@@ -111,7 +133,7 @@ CREATE TABLE users (id UUID PRIMARY KEY, status user_status);`,
 				require.NoError(t, afero.WriteFile(fs, path, []byte(content), 0644))
 			}
 
-			count, err := doGenerateEnums(fs, []string{"definitions"}, "output", "ts")
+			count, err := doGenerateEnums(fs, []string{"definitions"}, "output", "ts", tt.zod)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return

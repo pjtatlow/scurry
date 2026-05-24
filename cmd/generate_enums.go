@@ -16,6 +16,7 @@ import (
 )
 
 var outputDir string
+var zodEnums bool
 
 var supportedLanguages = map[string]bool{
 	"ts": true,
@@ -41,6 +42,7 @@ func init() {
 
 	flags.AddDefinitionDirs(generateEnumsCmd)
 	generateEnumsCmd.Flags().StringVar(&outputDir, "output", "", "Output directory for generated TypeScript files")
+	generateEnumsCmd.Flags().BoolVar(&zodEnums, "zod", false, "Generate Zod schemas instead of TypeScript enums")
 	generateEnumsCmd.MarkFlagRequired("output")
 }
 
@@ -55,7 +57,7 @@ func generateEnums(cmd *cobra.Command, args []string) error {
 	}
 
 	fs := afero.NewOsFs()
-	count, err := doGenerateEnums(fs, flags.DefinitionDirs, outputDir, lang)
+	count, err := doGenerateEnums(fs, flags.DefinitionDirs, outputDir, lang, zodEnums)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
@@ -65,7 +67,7 @@ func generateEnums(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func doGenerateEnums(fs afero.Fs, definitionDirs []string, outDir, lang string) (int, error) {
+func doGenerateEnums(fs afero.Fs, definitionDirs []string, outDir, lang string, zod bool) (int, error) {
 	// Walk definition dirs and parse SQL files
 	var allStatements []tree.Statement
 	for _, definitionDir := range definitionDirs {
@@ -116,7 +118,11 @@ func doGenerateEnums(fs afero.Fs, definitionDirs []string, outDir, lang string) 
 		var ext string
 		switch lang {
 		case "ts":
-			content = generate.GenerateTypeScriptEnum(typeName, values)
+			if zod {
+				content = generate.GenerateTypeScriptZodEnum(typeName, values)
+			} else {
+				content = generate.GenerateTypeScriptEnum(typeName, values)
+			}
 			ext = ".ts"
 		}
 		fileName := generate.ToKebabCase(typeName) + ext
