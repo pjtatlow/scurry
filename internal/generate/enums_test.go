@@ -189,3 +189,69 @@ func TestGenerateTypeScriptEnum(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateTypeScriptZodEnum(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		typeName string
+		values   []string
+		expected string
+	}{
+		{
+			name:     "basic enum",
+			typeName: "status",
+			values:   []string{"Pending", "Approved", "Rejected"},
+			expected: `import * as z from "zod/v4";
+
+export const StatusValues = [
+  "Pending",
+  "Approved",
+  "Rejected",
+] as const;
+export const StatusSchema = z.enum(StatusValues);
+export const Status = StatusSchema.enum;
+export type Status = z.infer<typeof StatusSchema>;
+`,
+		},
+		{
+			name:     "snake_case enum",
+			typeName: "user_status",
+			values:   []string{"active", "pending_review"},
+			expected: `import * as z from "zod/v4";
+
+export const UserStatusValues = [
+  "active",
+  "pending_review",
+] as const;
+export const UserStatusSchema = z.enum(UserStatusValues);
+export const UserStatus = UserStatusSchema.enum;
+export type UserStatus = z.infer<typeof UserStatusSchema>;
+`,
+		},
+		{
+			name:     "escaped values",
+			typeName: "message_status",
+			values:   []string{"can't_send", "line\nbreak"},
+			expected: `import * as z from "zod/v4";
+
+export const MessageStatusValues = [
+  "can't_send",
+  "line\nbreak",
+] as const;
+export const MessageStatusSchema = z.enum(MessageStatusValues);
+export const MessageStatus = MessageStatusSchema.enum;
+export type MessageStatus = z.infer<typeof MessageStatusSchema>;
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := GenerateTypeScriptZodEnum(tt.typeName, tt.values)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

@@ -47,3 +47,21 @@ func GenerateTypeScriptEnum(typeName string, values []string) string {
 
 	return b.String()
 }
+
+func GenerateTypeScriptZodEnum(typeName string, values []string) string {
+	pascalName := ToPascalCase(typeName)
+	valuesName := fmt.Sprintf("%sValues", pascalName)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "import * as z from \"zod/v4\";\n\n")
+	fmt.Fprintf(&b, "export const %s = [\n", valuesName)
+	for _, v := range values {
+		fmt.Fprintf(&b, "  %q,\n", v)
+	}
+	b.WriteString("] as const;\n")
+	fmt.Fprintf(&b, "export const %sSchema = z.enum(%s);\n", pascalName, valuesName)
+	fmt.Fprintf(&b, "export const %s = %sSchema.enum;\n", pascalName, pascalName)
+	fmt.Fprintf(&b, "export type %s = z.infer<typeof %sSchema>;\n", pascalName, pascalName)
+
+	return b.String()
+}
