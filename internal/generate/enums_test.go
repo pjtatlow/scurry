@@ -189,3 +189,53 @@ func TestGenerateTypeScriptEnum(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateTypeScriptZodEnum(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		typeName string
+		values   []string
+		expected string
+	}{
+		{
+			name:     "basic enum",
+			typeName: "user_status",
+			values:   []string{"active", "inactive", "pending_review"},
+			expected: `import * as z from "zod/v4";
+
+export const UserStatusSchema = z.enum(["active", "inactive", "pending_review"]);
+export type UserStatus = z.infer<typeof UserStatusSchema>;
+`,
+		},
+		{
+			name:     "single value",
+			typeName: "color",
+			values:   []string{"red"},
+			expected: `import * as z from "zod/v4";
+
+export const ColorSchema = z.enum(["red"]);
+export type Color = z.infer<typeof ColorSchema>;
+`,
+		},
+		{
+			name:     "values with special characters",
+			typeName: "notification_channel",
+			values:   []string{"email", "sms", "in-app_push"},
+			expected: `import * as z from "zod/v4";
+
+export const NotificationChannelSchema = z.enum(["email", "sms", "in-app_push"]);
+export type NotificationChannel = z.infer<typeof NotificationChannelSchema>;
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := GenerateTypeScriptZodEnum(tt.typeName, tt.values)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

@@ -47,3 +47,22 @@ func GenerateTypeScriptEnum(typeName string, values []string) string {
 
 	return b.String()
 }
+
+// GenerateTypeScriptZodEnum generates a Zod enum schema and inferred TypeScript type.
+func GenerateTypeScriptZodEnum(typeName string, values []string) string {
+	pascalName := ToPascalCase(typeName)
+
+	var b strings.Builder
+	b.WriteString("import * as z from \"zod/v4\";\n\n")
+	fmt.Fprintf(&b, "export const %sSchema = z.enum([", pascalName)
+	for i, v := range values {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q", v)
+	}
+	fmt.Fprintf(&b, "]);\n")
+	fmt.Fprintf(&b, "export type %s = z.infer<typeof %sSchema>;\n", pascalName, pascalName)
+
+	return b.String()
+}
