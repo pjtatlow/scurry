@@ -66,6 +66,16 @@ func getCreateTableDependencies(stmt *tree.CreateTable) set.Set[string] {
 			if table != tableName {
 				deps.Add(fmt.Sprintf("%s.%s", schema, table))
 			}
+			// FK targets a unique constraint on the referenced columns.
+			// Depending on that constraint's synthetic provider name lets
+			// the migration generator order this CREATE TABLE after a
+			// unique index/constraint created earlier in the same
+			// migration. When ToCols is empty the FK references the
+			// parent's PK; that ordering is already implied by the
+			// parent table existing.
+			if len(d.ToCols) > 0 {
+				deps.Add(uniqueProviderName(schema, table, nameListStrings(d.ToCols)))
+			}
 		// None of these TableDefs can have dependencies afaik
 		case *tree.FamilyTableDef:
 		case *tree.CheckConstraintTableDef:
@@ -196,6 +206,11 @@ func getAlterTableDependencies(stmt *tree.AlterTable, strict bool) set.Set[strin
 				}
 				for _, col := range constraint.FromCols {
 					deps.Add(schemaName + "." + tableName + "." + col.Normalize())
+				}
+				// Match against any unique constraint added in this same
+				// migration that covers the referenced columns.
+				if len(constraint.ToCols) > 0 {
+					deps.Add(uniqueProviderName(otherSchemaName, otherTableName, nameListStrings(constraint.ToCols)))
 				}
 
 			default:
