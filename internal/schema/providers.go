@@ -32,12 +32,21 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 				case *tree.ColumnTableDef:
 					names.Add(schemaName + "." + tableName + "." + d.Name.Normalize())
 
+				case *tree.UniqueConstraintTableDef:
+					// PK and UNIQUE constraints can be referenced by FKs from other tables.
+					if cols, ok := indexElemColumnNames(d.Columns); ok && d.Predicate == nil && !d.WithoutIndex {
+						names.Add(uniqueProviderName(schemaName, tableName, cols))
+					}
+
+				case *tree.IndexTableDef:
+					// Inline UNIQUE INDEX inside CREATE TABLE; HoistConstraints
+					// rewrites these as UniqueConstraintTableDef before we get
+					// here, but handle them defensively.
+
 				// None of these can be depended on by other objects
 				case *tree.ForeignKeyConstraintTableDef:
 				case *tree.FamilyTableDef:
-				case *tree.UniqueConstraintTableDef:
 				case *tree.CheckConstraintTableDef:
-				case *tree.IndexTableDef:
 				// Not supported in scurry
 				case *tree.LikeTableDef:
 
@@ -93,13 +102,21 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 					colName := c.Column.Normalize()
 					names.Add(schemaName + "." + tableName + "." + colName)
 
+				case *tree.AlterTableAddConstraint:
+					// Adding a UNIQUE constraint (or PK) can back FK references
+					// from other statements in the same migration.
+					if u, ok := c.ConstraintDef.(*tree.UniqueConstraintTableDef); ok && u.Predicate == nil && !u.WithoutIndex {
+						if cols, ok := indexElemColumnNames(u.Columns); ok {
+							names.Add(uniqueProviderName(schemaName, tableName, cols))
+						}
+					}
+
 				// None of these provide anything that can be depended on elsewhere
 				case *tree.AlterTableSetDefault:
 				case *tree.AlterTableDropColumn:
 				case *tree.AlterTableDropNotNull:
 				case *tree.AlterTableDropStored:
 				case *tree.AlterTableSetNotNull:
-				case *tree.AlterTableAddConstraint:
 				case *tree.AlterTableDropConstraint:
 				case *tree.AlterTableSetVisible:
 				case *tree.AlterTableSetOnUpdate:
@@ -120,6 +137,15 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 			indexName := s.Name.Normalize()
 			if indexName != "" {
 				names.Add(indexName)
+			}
+			// A unique, non-partial, column-based index can back a foreign
+			// key reference. Advertise that so FKs added in the same
+			// migration are ordered after it.
+			if s.Unique && s.Predicate == nil {
+				if cols, ok := indexElemColumnNames(s.Columns); ok {
+					schemaName, tableName := getTableName(s.Table)
+					names.Add(uniqueProviderName(schemaName, tableName, cols))
+				}
 			}
 		}
 
