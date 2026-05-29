@@ -16,6 +16,7 @@ const (
 	OptionTryAgain      = "try_again"
 	OptionMarkSucceeded = "mark_succeeded"
 	OptionDropDatabase  = "drop_database"
+	OptionSkipAll       = "skip_all"
 	OptionAbort         = "abort"
 )
 
@@ -85,6 +86,9 @@ func MarkSucceeded(ctx context.Context, dbClient *db.Client, migration db.Migrat
 type RecoveryPromptConfig struct {
 	// IncludeDropDatabase includes the "drop database" option
 	IncludeDropDatabase bool
+	// IncludeSkipAll includes the "skip migrations" option, which marks all
+	// pending migrations as complete without executing them.
+	IncludeSkipAll bool
 	// MigrationStatus is "pending" or "failed" - affects descriptions
 	MigrationStatus string
 }
@@ -99,6 +103,9 @@ const (
 	ResultAbort
 	// ResultDropDatabase indicates the user chose to drop the database
 	ResultDropDatabase
+	// ResultSkipAll indicates the user chose to skip running migrations and
+	// mark all pending migrations as complete
+	ResultSkipAll
 )
 
 // RecoveryLoopConfig configures the recovery loop behavior.
@@ -111,6 +118,8 @@ type RecoveryLoopConfig struct {
 	FailedMigration *db.AppliedMigration
 	// IncludeDropDatabase enables the drop database option
 	IncludeDropDatabase bool
+	// IncludeSkipAll enables the "skip migrations" option
+	IncludeSkipAll bool
 	// MigrationStatus is "pending" or "failed" for display purposes
 	MigrationStatus string
 
@@ -122,6 +131,11 @@ type RecoveryLoopConfig struct {
 	// OnDropDatabase is called when the user chooses to drop the database.
 	// Required if IncludeDropDatabase is true.
 	OnDropDatabase func(ctx context.Context, dbClient *db.Client) error
+
+	// OnSkipAll is called when the user chooses to skip running migrations and
+	// mark all pending migrations as complete.
+	// Required if IncludeSkipAll is true.
+	OnSkipAll func(ctx context.Context, dbClient *db.Client) error
 }
 
 // PromptRecoveryOption displays the recovery options menu and returns the user's choice.
@@ -145,6 +159,10 @@ func PromptRecoveryOption(config RecoveryPromptConfig) (string, error) {
 
 	if config.IncludeDropDatabase {
 		options = append(options, huh.NewOption("Drop database - Drop the entire database and start fresh", OptionDropDatabase))
+	}
+
+	if config.IncludeSkipAll {
+		options = append(options, huh.NewOption("Skip migrations - Mark all pending migrations as complete and continue", OptionSkipAll))
 	}
 
 	options = append(options, huh.NewOption("Abort - Exit without changes", OptionAbort))
@@ -173,6 +191,7 @@ func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryRe
 	for {
 		choice, err := PromptRecoveryOption(RecoveryPromptConfig{
 			IncludeDropDatabase: config.IncludeDropDatabase,
+			IncludeSkipAll:      config.IncludeSkipAll,
 			MigrationStatus:     config.MigrationStatus,
 		})
 		if err != nil {
@@ -209,6 +228,16 @@ func RunRecoveryLoop(ctx context.Context, config RecoveryLoopConfig) (RecoveryRe
 			}
 			fmt.Println(ui.Success("Database dropped. Please re-run push to start fresh."))
 			return ResultDropDatabase, nil
+
+		case OptionSkipAll:
+			if config.OnSkipAll == nil {
+				return ResultAbort, fmt.Errorf("skip all handler not configured")
+			}
+			if err := config.OnSkipAll(ctx, config.DbClient); err != nil {
+				return ResultAbort, fmt.Errorf("failed to skip migrations: %w", err)
+			}
+			fmt.Println(ui.Success("All pending migrations marked as complete."))
+			return ResultSkipAll, nil
 
 		case OptionAbort:
 			return ResultAbort, nil

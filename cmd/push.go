@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 
 	"github.com/pjtatlow/scurry/internal/db"
 	"github.com/pjtatlow/scurry/internal/flags"
+	migrationpkg "github.com/pjtatlow/scurry/internal/migration"
+	"github.com/pjtatlow/scurry/internal/recovery"
 	"github.com/pjtatlow/scurry/internal/schema"
 	"github.com/pjtatlow/scurry/internal/ui"
 )
@@ -30,16 +34,23 @@ All non-system schemas will be pushed automatically.`,
 }
 
 var (
-	pushDryRun bool
+	pushDryRun         bool
+	pushWithMigrations bool
 )
+
+// errPushCanceled signals that the user aborted the push (e.g. declined to run
+// migrations or aborted recovery). It is handled in executePush as a clean exit.
+var errPushCanceled = errors.New("push canceled")
 
 func init() {
 	rootCmd.AddCommand(pushCmd)
 
 	flags.AddDbUrl(pushCmd)
 	flags.AddDefinitionDirs(pushCmd)
+	flags.AddMigrationDir(pushCmd)
 
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be executed without applying changes")
+	pushCmd.Flags().BoolVar(&pushWithMigrations, "with-migrations", false, "Run pending migrations before computing and applying the schema diff")
 }
 
 func push(cmd *cobra.Command, args []string) error {
@@ -68,6 +79,7 @@ type PushOptions struct {
 	Verbose        bool
 	DryRun         bool
 	Force          bool
+	RunMigrations  bool
 }
 
 // PushResult contains the result of a push operation
@@ -144,6 +156,7 @@ func doPush(ctx context.Context) error {
 		Verbose:        flags.Verbose,
 		DryRun:         pushDryRun,
 		Force:          flags.Force,
+		RunMigrations:  pushWithMigrations,
 	}
 
 	errCtx := &ErrorContext{}
@@ -160,6 +173,40 @@ func doPush(ctx context.Context) error {
 }
 
 func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*PushResult, error) {
+	// Run pending tracked migrations against the live database first, so that the
+	// diff captures any custom changes other developers committed as migrations
+	// (data backfills, DDL the auto-diff can't express) instead of reverting them.
+	baseline := false
+	if opts.RunMigrations {
+		var err error
+		baseline, err = runMigrationsBeforePush(ctx, opts)
+		if err != nil {
+			if errors.Is(err, errPushCanceled) {
+				return &PushResult{HasChanges: false, Statements: []string{}}, nil
+			}
+			return nil, err
+		}
+	}
+
+	// finalizeBaseline marks all on-disk migrations as applied. It is only armed
+	// when adopting a previously untracked, non-empty database: the migrations
+	// aren't run (they'd fail against the existing schema), the normal push
+	// reconciles the schema, and then we record the migrations as the baseline.
+	finalizeBaseline := func() error {
+		if !baseline || opts.DryRun {
+			return nil
+		}
+		migs, err := loadMigrations(opts.Fs)
+		if err != nil {
+			return err
+		}
+		if err := markAllMigrationsComplete(ctx, opts.DbClient, migs); err != nil {
+			return fmt.Errorf("failed to baseline migrations: %w", err)
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("✓ Marked %d existing migration(s) as applied (baseline)", len(migs))))
+		return nil
+	}
+
 	// Load local schema from files
 	if opts.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("→ Loading local schema from %s...", strings.Join(opts.DefinitionDirs, ", "))))
@@ -207,6 +254,9 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	diffResult := schema.Compare(localSchema, remoteSchema)
 
 	if !diffResult.HasChanges() {
+		if baseErr := finalizeBaseline(); baseErr != nil {
+			return nil, baseErr
+		}
 		if opts.Verbose {
 			fmt.Println()
 			fmt.Println(ui.Success("✓ No changes"))
@@ -285,6 +335,9 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 		if !retryDiff.HasChanges() {
 			fmt.Println(ui.Warning("⚠ Despite the error, all changes appear to have been applied."))
 			fmt.Println(ui.Subtle(fmt.Sprintf("  Original error: %s", err)))
+			if baseErr := finalizeBaseline(); baseErr != nil {
+				return nil, baseErr
+			}
 			return &PushResult{HasChanges: true, Statements: statements}, nil
 		}
 
@@ -310,12 +363,186 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 		}
 
 		fmt.Println(ui.Success("✓ All remaining statements applied individually."))
+		if baseErr := finalizeBaseline(); baseErr != nil {
+			return nil, baseErr
+		}
 		return &PushResult{HasChanges: true, Statements: statements}, nil
 	}
 
 	fmt.Println()
 	fmt.Println(ui.Success("✓ Successfully applied all migrations!"))
+	if baseErr := finalizeBaseline(); baseErr != nil {
+		return nil, baseErr
+	}
 	return &PushResult{HasChanges: true, Statements: statements}, nil
+}
+
+// runMigrationsBeforePush runs all pending tracked migrations against the live database
+// before the schema diff. If a migration is in a failed/pending state it first runs the
+// interactive recovery flow. Returns errPushCanceled if the user aborts.
+//
+// It returns baseline=true when adopting a previously untracked, non-empty database: the
+// migrations are not run (they would fail against the already-existing schema). The caller
+// then reconciles the schema with a normal push and marks the migrations as the baseline.
+func runMigrationsBeforePush(ctx context.Context, opts PushOptions) (bool, error) {
+	dbClient := opts.DbClient
+
+	if err := dbClient.InitMigrationHistory(ctx); err != nil {
+		return false, err
+	}
+
+	migrations, err := loadMigrations(opts.Fs)
+	if err != nil {
+		return false, err
+	}
+	if len(migrations) == 0 {
+		return false, nil
+	}
+
+	// Resolve any failed or pending sync migration before running new ones.
+	failed, err := dbClient.GetFailedMigration(ctx)
+	if err != nil {
+		return false, err
+	}
+	if failed != nil {
+		if err := recoverBeforePush(ctx, opts, migrations, failed); err != nil {
+			return false, err
+		}
+	}
+
+	// Determine which migrations still need to run.
+	applied, err := dbClient.GetAppliedMigrations(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	// Adopt an existing, untracked database. If no migrations have ever been
+	// recorded but the database already has a schema, treat the current state as
+	// the baseline rather than re-running the migrations (which would fail against
+	// the existing objects).
+	if len(applied) == 0 {
+		existing, err := schema.LoadFromDatabase(ctx, dbClient)
+		if err != nil {
+			return false, err
+		}
+		if schemaHasObjects(existing) {
+			fmt.Println(ui.Info(fmt.Sprintf("Existing untracked database detected; baselining %d migration(s) after the push.", len(migrations))))
+			return true, nil
+		}
+	}
+
+	unapplied, warnings, err := filterUnappliedMigrations(migrations, applied)
+	if err != nil {
+		return false, err
+	}
+	for _, warning := range warnings {
+		fmt.Println(ui.Warning(warning))
+	}
+	if len(unapplied) == 0 {
+		if opts.Verbose {
+			fmt.Println(ui.Subtle("→ No pending migrations to run"))
+		}
+		return false, nil
+	}
+
+	fmt.Printf("\n%s\n", ui.Header(fmt.Sprintf("Pending migrations to run before pushing (%d):", len(unapplied))))
+	for i, migration := range unapplied {
+		modeLabel := ""
+		if migration.Mode == db.MigrationModeAsync {
+			modeLabel = " (async)"
+		}
+		fmt.Printf("  %d. %s%s\n", i+1, migration.Name, modeLabel)
+	}
+	fmt.Println()
+
+	if opts.DryRun {
+		fmt.Println(ui.Info(fmt.Sprintf("ℹ Dry run mode - %d migration(s) would run before the diff.", len(unapplied))))
+		return false, nil
+	}
+
+	fmt.Println(ui.Info("⟳ Running migrations..."))
+	executed, skipped, err := runMigrationList(ctx, dbClient, unapplied)
+	if err != nil {
+		return false, err
+	}
+	if executed > 0 {
+		fmt.Println(ui.Success(fmt.Sprintf("✓ Ran %d migration(s)", executed)))
+	}
+	if skipped > 0 {
+		return false, fmt.Errorf("could not run %d migration(s) due to unmet dependencies or a running async migration", skipped)
+	}
+
+	return false, nil
+}
+
+// schemaHasObjects reports whether a loaded schema contains any user-defined objects
+// (tables, types, routines, sequences, or views). The bare public schema is ignored, so
+// a freshly created, empty database reports false.
+func schemaHasObjects(s *schema.Schema) bool {
+	return len(s.Tables)+len(s.Types)+len(s.Routines)+len(s.Sequences)+len(s.Views) > 0
+}
+
+// recoverBeforePush runs the interactive recovery flow for a failed/pending migration
+// encountered during push, adding a "skip migrations" option that marks all pending
+// migrations complete and lets the declarative diff bring the schema to its final state.
+func recoverBeforePush(ctx context.Context, opts PushOptions, migrations []db.Migration, failed *db.AppliedMigration) error {
+	if opts.Force || !ui.IsInteractive() {
+		return fmt.Errorf("migration %q is in %s state; run 'scurry migration recover' before pushing", failed.Name, failed.Status)
+	}
+
+	migrationFile := filepath.Join(flags.MigrationDir, failed.Name, "migration.sql")
+	exists, err := afero.Exists(opts.Fs, migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to check migration file: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("migration file not found: %s\nThe migration file may have been deleted", migrationFile)
+	}
+	content, err := afero.ReadFile(opts.Fs, migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+	rawSQL := string(content)
+	migrationSQL := migrationpkg.StripHeader(rawSQL)
+
+	displayMigrationInfo(failed, migrationSQL)
+
+	migration := db.Migration{
+		Name:     failed.Name,
+		SQL:      migrationSQL,
+		Checksum: computeChecksum(rawSQL),
+	}
+
+	result, err := recovery.RunRecoveryLoop(ctx, recovery.RecoveryLoopConfig{
+		DbClient:        opts.DbClient,
+		Migration:       migration,
+		FailedMigration: failed,
+		IncludeSkipAll:  true,
+		MigrationStatus: failed.Status,
+		OnRetryFailure: func(ctx context.Context, client *db.Client) (*db.AppliedMigration, error) {
+			refreshed, err := client.GetFailedMigration(ctx)
+			if err != nil {
+				fmt.Println(ui.Warning(fmt.Sprintf("Could not refresh migration status: %v", err)))
+				return nil, err
+			}
+			if refreshed != nil {
+				displayMigrationInfo(refreshed, migrationSQL)
+			}
+			return refreshed, nil
+		},
+		OnSkipAll: func(ctx context.Context, client *db.Client) error {
+			return markAllMigrationsComplete(ctx, client, migrations)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if result == recovery.ResultAbort {
+		fmt.Println(ui.Subtle("Push canceled."))
+		return errPushCanceled
+	}
+
+	return nil
 }
 
 // promptForUsingExpressions checks for column type changes and prompts the user
