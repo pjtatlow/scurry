@@ -211,6 +211,32 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 	// Execute migrations one by one
 	fmt.Println()
+	executed, skipped, err := runMigrationList(ctx, dbClient, migrationsToExecute)
+	if err != nil {
+		return err
+	}
+
+	// Summary
+	fmt.Println()
+	if executed > 0 {
+		fmt.Println(ui.Success(fmt.Sprintf("Applied %d migration(s)", executed)))
+	}
+	if skipped > 0 {
+		return fmt.Errorf("failed to execute %d migration(s) due to unmet dependencies or running async", skipped)
+	}
+	if executed > 0 {
+		fmt.Println(ui.Success("All migrations executed successfully!"))
+	}
+
+	return nil
+}
+
+// runMigrationList executes a prepared, ordered list of migrations with statement-level
+// tracking, dependency checks, async-running guards, and squash handling. It prints
+// progress for each migration and returns the number executed and the number skipped
+// (due to unmet dependencies or a still-running async migration). Execution stops at the
+// first failure, returning the error.
+func runMigrationList(ctx context.Context, dbClient *db.Client, migrationsToExecute []db.Migration) (int, int, error) {
 	executed := 0
 	skipped := 0
 	for i, migration := range migrationsToExecute {
@@ -218,7 +244,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		if len(migration.DependsOn) > 0 {
 			unmet, err := dbClient.CheckDependenciesMet(ctx, migration.DependsOn)
 			if err != nil {
-				return fmt.Errorf("failed to check dependencies for %s: %w", migration.Name, err)
+				return executed, skipped, fmt.Errorf("failed to check dependencies for %s: %w", migration.Name, err)
 			}
 			if len(unmet) > 0 {
 				fmt.Println(ui.Warning(fmt.Sprintf("Skipping %s (%d/%d): unmet dependencies: %s",
@@ -233,7 +259,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 		if migration.Mode == db.MigrationModeAsync {
 			running, err := dbClient.HasRunningAsyncMigration(ctx)
 			if err != nil {
-				return fmt.Errorf("failed to check for running async migration: %w", err)
+				return executed, skipped, fmt.Errorf("failed to check for running async migration: %w", err)
 			}
 			if running != nil {
 				fmt.Println(ui.Warning(fmt.Sprintf("Skipping %s (%d/%d): async migration %q is still running",
@@ -249,7 +275,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 			if err := dbClient.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == db.MigrationModeAsync); err != nil {
 				fmt.Println(ui.Error(fmt.Sprintf("\nFailed to record squash migration: %s", migration.Name)))
 				fmt.Println(ui.Error(fmt.Sprintf("Error: %v", err)))
-				return fmt.Errorf("migration execution stopped due to error")
+				return executed, skipped, fmt.Errorf("migration execution stopped due to error")
 			}
 			fmt.Printf("  %s\n", ui.Success("✓ Recorded (squash)"))
 			executed++
@@ -258,8 +284,7 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("Executing %s (%d/%d)...\n", migration.Name, i+1, len(migrationsToExecute))
 
-		err := dbClient.ExecuteMigrationWithTracking(ctx, migration)
-		if err != nil {
+		if err := dbClient.ExecuteMigrationWithTracking(ctx, migration); err != nil {
 			// Migration failed - report the error and stop
 			fmt.Println(ui.Error(fmt.Sprintf("\nMigration failed: %s", migration.Name)))
 			fmt.Println(ui.Error(fmt.Sprintf("Error: %v", err)))
@@ -276,23 +301,55 @@ func runMigrationExecute(cmd *cobra.Command, args []string) error {
 			fmt.Println()
 			fmt.Println(ui.Info("Run 'scurry migration recover' to resolve this failure"))
 
-			return fmt.Errorf("migration execution stopped due to error")
+			return executed, skipped, fmt.Errorf("migration execution stopped due to error")
 		}
 
 		fmt.Printf("  %s\n", ui.Success("✓ Success"))
 		executed++
 	}
 
-	// Summary
-	fmt.Println()
-	if executed > 0 {
-		fmt.Println(ui.Success(fmt.Sprintf("Applied %d migration(s)", executed)))
+	return executed, skipped, nil
+}
+
+// markAllMigrationsComplete reconciles the migrations table to a "done" state without
+// executing any SQL. For each migration file: a failed migration is recovered, a pending
+// migration is completed, a never-applied migration is recorded as succeeded, and one
+// already in a done state (succeeded/recovered) is left untouched. This is used by the
+// push "skip migrations" recovery path, where the declarative diff will bring the schema
+// to its final state regardless of which migrations actually ran.
+func markAllMigrationsComplete(ctx context.Context, dbClient *db.Client, migrations []db.Migration) error {
+	applied, err := dbClient.GetAppliedMigrations(ctx)
+	if err != nil {
+		return err
 	}
-	if skipped > 0 {
-		return fmt.Errorf("failed to execute %d migration(s) due to unmet dependencies or running async", skipped)
+
+	appliedMap := make(map[string]db.AppliedMigration, len(applied))
+	for _, m := range applied {
+		appliedMap[m.Name] = m
 	}
-	if executed > 0 {
-		fmt.Println(ui.Success("All migrations executed successfully!"))
+
+	for _, migration := range migrations {
+		existing, ok := appliedMap[migration.Name]
+		if !ok {
+			// Never applied - record it as succeeded.
+			if err := dbClient.RecordMigration(ctx, migration.Name, migration.Checksum, migration.Mode == db.MigrationModeAsync); err != nil {
+				return err
+			}
+			continue
+		}
+
+		switch existing.Status {
+		case db.MigrationStatusSucceeded, db.MigrationStatusRecovered:
+			// Already done.
+		case db.MigrationStatusFailed:
+			if err := dbClient.RecoverMigration(ctx, migration.Name); err != nil {
+				return err
+			}
+		case db.MigrationStatusPending:
+			if err := dbClient.CompleteMigration(ctx, migration.Name); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
