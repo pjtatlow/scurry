@@ -11,7 +11,7 @@ func ToPascalCase(s string) string {
 	var result strings.Builder
 
 	splitFn := func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	}
 	parts := strings.FieldsFunc(s, splitFn)
 
