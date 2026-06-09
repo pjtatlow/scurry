@@ -50,6 +50,11 @@ func TestToPascalCase(t *testing.T) {
 			expected: "Active",
 		},
 		{
+			name:     "space separated",
+			input:    "For Sale",
+			expected: "ForSale",
+		},
+		{
 			name:     "empty string",
 			input:    "",
 			expected: "",
@@ -176,6 +181,46 @@ func TestGenerateTypeScriptEnum(t *testing.T) {
 			typeName: "empty_enum",
 			values:   []string{},
 			expected: `export enum EmptyEnum {
+}
+`,
+		},
+		{
+			name:     "leading digit values",
+			typeName: "spend_bracket",
+			values:   []string{"1k_to_5k", "1h"},
+			expected: `export enum SpendBracket {
+  _1kTo5k = "1k_to_5k",
+  _1h = "1h",
+}
+`,
+		},
+		{
+			name:     "value with punctuation",
+			typeName: "eei_code",
+			values:   []string{"NOEEI 30.36"},
+			expected: `export enum EeiCode {
+  Noeei3036 = "NOEEI 30.36",
+}
+`,
+		},
+		{
+			name:     "numeric values",
+			typeName: "font_weight",
+			values:   []string{"100", "200", "normal"},
+			expected: `export enum FontWeight {
+  _100 = "100",
+  _200 = "200",
+  Normal = "normal",
+}
+`,
+		},
+		{
+			name:     "case-variant duplicate",
+			typeName: "status",
+			values:   []string{"active", "ACTIVE"},
+			expected: `export enum Status {
+  Active = "active",
+  Active_2 = "ACTIVE",
 }
 `,
 		},

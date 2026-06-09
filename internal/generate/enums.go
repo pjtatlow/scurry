@@ -11,7 +11,7 @@ func ToPascalCase(s string) string {
 	var result strings.Builder
 
 	splitFn := func(r rune) bool {
-		return r == '_' || r == '-'
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	}
 	parts := strings.FieldsFunc(s, splitFn)
 
@@ -40,10 +40,27 @@ func GenerateTypeScriptEnum(typeName string, values []string) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "export enum %s {\n", pascalName)
+	seen := map[string]bool{}
 	for _, v := range values {
-		fmt.Fprintf(&b, "  %s = %q,\n", ToPascalCase(v), v)
+		fmt.Fprintf(&b, "  %s = %q,\n", resolveMemberName(ToPascalCase(v), seen), v)
 	}
 	b.WriteString("}\n")
 
 	return b.String()
+}
+
+func resolveMemberName(pascal string, seen map[string]bool) string {
+	name := pascal
+	// leading digits aren't valid identifiers, and a numeric name is rejected
+	// even when quoted, so prefix it
+	if name != "" && name[0] >= '0' && name[0] <= '9' {
+		name = "_" + name
+	}
+	base := name
+	// dedup
+	for i := 2; seen[name]; i++ {
+		name = fmt.Sprintf("%s_%d", base, i)
+	}
+	seen[name] = true
+	return name
 }
