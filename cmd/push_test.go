@@ -556,8 +556,9 @@ func TestPushIntegrationComplex(t *testing.T) {
 			},
 			// CockroachDB doesn't support ALTER COLUMN TYPE requiring rewrite inside a transaction,
 			// so we need to DROP INDEX, then run ALTER COLUMN TYPE outside transaction, then CREATE INDEX
-			// Statements: DROP INDEX, COMMIT, BEGIN, COMMIT, ALTER, BEGIN, COMMIT, BEGIN, CREATE INDEX
-			expectedStmtCount: 9,
+			// Redundant transaction boundaries are coalesced, leaving the minimal set:
+			// DROP INDEX, COMMIT, ALTER, BEGIN, CREATE INDEX
+			expectedStmtCount: 5,
 			expectedStmts:     []string{"DROP INDEX", "ALTER COLUMN", "email", "TYPE", "VARCHAR", "CREATE INDEX"},
 		},
 		{
