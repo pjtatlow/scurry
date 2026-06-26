@@ -237,16 +237,12 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 		allStatements = append(allStatements, migration.stmts...)
 	}
 
-	// If we begin a transaction change, skip it
-	l := len(allStatements)
-	if l > 2 && isCommitBegin(allStatements[:2]) {
-		allStatements = allStatements[2:]
-	}
-	// If we end a transaction change, skip it
-	l = len(allStatements)
-	if l > 2 && isCommitBegin(allStatements[l-2:]) {
-		allStatements = allStatements[:l-2]
-	}
+	// Each Difference independently prepends/appends COMMIT/BEGIN transaction
+	// boundaries to its statements. Once flattened, consecutive Differences can
+	// produce redundant runs of boundaries (e.g. "COMMIT; BEGIN; COMMIT; BEGIN;")
+	// as well as leading/trailing boundaries. Coalesce them down to the minimal
+	// set that produces the same transaction structure at execution time.
+	allStatements = coalesceTransactionBoundaries(allStatements)
 
 	ddl := make([]string, 0)
 	for _, stmt := range allStatements {
@@ -318,15 +314,94 @@ func formatWarningComment(warning string) string {
 	return strings.Join(commentLines, "\n")
 }
 
-func isCommitBegin(stmts []tree.Statement) bool {
-	if len(stmts) != 2 {
-		return false
+func isCommit(stmt tree.Statement) bool {
+	_, ok := stmt.(*tree.CommitTransaction)
+	return ok
+}
+
+func isBegin(stmt tree.Statement) bool {
+	_, ok := stmt.(*tree.BeginTransaction)
+	return ok
+}
+
+// txnChunk is a contiguous run of real (non transaction-control) statements
+// that execute together, optionally outside of a transaction.
+type txnChunk struct {
+	stmts  []tree.Statement
+	nonTxn bool
+}
+
+// coalesceTransactionBoundaries removes redundant COMMIT/BEGIN transaction
+// control statements while preserving the exact transaction structure that the
+// executor (db.chunkStatementsByTransaction) derives from them.
+//
+// Statements are first partitioned into logical chunks using the same rules as
+// the executor — a COMMIT immediately followed by BEGIN is a transaction
+// boundary, a lone COMMIT enters a non-transactional section, and a lone BEGIN
+// exits it. Empty chunks (the artifacts of redundant boundaries) are dropped.
+// The chunks are then re-emitted with the minimal canonical set of control
+// statements needed to reproduce the same partition, so the generated SQL no
+// longer contains runs like "COMMIT; BEGIN; COMMIT; BEGIN;".
+func coalesceTransactionBoundaries(stmts []tree.Statement) []tree.Statement {
+	var chunks []txnChunk
+	var cur []tree.Statement
+	inNonTxn := false
+
+	flush := func(nonTxn bool) {
+		if len(cur) > 0 {
+			chunks = append(chunks, txnChunk{stmts: cur, nonTxn: nonTxn})
+			cur = nil
+		}
 	}
-	if _, ok := stmts[0].(*tree.CommitTransaction); !ok {
-		return false
+
+	for i := 0; i < len(stmts); i++ {
+		stmt := stmts[i]
+		switch {
+		case isCommit(stmt):
+			if i+1 < len(stmts) && isBegin(stmts[i+1]) {
+				// COMMIT/BEGIN pair: transaction boundary.
+				flush(false)
+				i++ // consume the BEGIN
+				inNonTxn = false
+			} else {
+				// Lone COMMIT: enter non-transactional section.
+				flush(false)
+				inNonTxn = true
+			}
+		case isBegin(stmt):
+			// Lone BEGIN: exit non-transactional section.
+			flush(inNonTxn)
+			inNonTxn = false
+		default:
+			cur = append(cur, stmt)
+		}
 	}
-	if _, ok := stmts[1].(*tree.BeginTransaction); !ok {
-		return false
+	flush(inNonTxn)
+
+	out := make([]tree.Statement, 0, len(stmts))
+	for j, chunk := range chunks {
+		if j == 0 {
+			if chunk.nonTxn {
+				out = append(out, &tree.CommitTransaction{})
+			}
+		} else {
+			prev := chunks[j-1]
+			switch {
+			case !prev.nonTxn && !chunk.nonTxn:
+				// txn -> txn: a single transaction boundary.
+				out = append(out, &tree.CommitTransaction{}, &tree.BeginTransaction{})
+			case !prev.nonTxn && chunk.nonTxn:
+				// txn -> non-txn: enter non-transactional section.
+				out = append(out, &tree.CommitTransaction{})
+			case prev.nonTxn && !chunk.nonTxn:
+				// non-txn -> txn: exit non-transactional section.
+				out = append(out, &tree.BeginTransaction{})
+			default:
+				// non-txn -> non-txn: exit then re-enter.
+				out = append(out, &tree.BeginTransaction{}, &tree.CommitTransaction{})
+			}
+		}
+		out = append(out, chunk.stmts...)
 	}
-	return true
+	return out
 }
