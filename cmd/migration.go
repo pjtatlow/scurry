@@ -129,7 +129,7 @@ func sanitizeMigrationName(name string) string {
 // Returns the migration directory name and the content written to migration.sql
 func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
 	// Generate timestamp prefix
-	timestamp := time.Now().Format("20060102150405")
+	timestamp := time.Now().UTC().Format("20060102150405")
 	migrationName := fmt.Sprintf("%s_%s", timestamp, sanitizeMigrationName(name))
 	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
 
