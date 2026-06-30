@@ -11,11 +11,9 @@ import (
 	"github.com/pjtatlow/scurry/internal/db"
 )
 
-// loadFromDDL applies the given DDL to a fresh shadow database and loads the
-// standardized schema back out — the same round-trip scurry performs in
-// production (enum columns become qualified UDT references, the PK is named,
-// etc.). The returned client stays open so callers can seed/inspect data; it is
-// closed automatically at test end.
+// loadFromDDL applies DDL to a fresh shadow database and loads the standardized
+// schema back out. The returned client stays open (closed at test end) so
+// callers can seed and inspect data.
 func loadFromDDL(t *testing.T, ctx context.Context, ddl ...string) (*Schema, *db.Client) {
 	t.Helper()
 	client, err := db.GetShadowDB(ctx, ddl...)

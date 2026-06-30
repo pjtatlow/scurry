@@ -11,11 +11,8 @@ import (
 func compareTypes(local, remote *Schema) []Difference {
 	diffs := make([]Difference, 0)
 
-	// A renamed enum looks like "drop the old type, create the new type" to a
-	// naive diff. Detect unambiguous renames up front and emit a single
-	// ALTER TYPE ... RENAME TO for each, then suppress the spurious
-	// create/drop of the renamed type below. The matching column type-changes
-	// are suppressed in compareTables via the same detection.
+	// A renamed enum reads as drop-old + create-new to a naive diff; emit one
+	// ALTER TYPE ... RENAME instead and suppress that create/drop below.
 	renames := detectEnumRenames(local, remote)
 	renamedOld := make(map[string]bool)
 	renamedNew := make(map[string]bool)
@@ -89,16 +86,14 @@ func compareTypes(local, remote *Schema) []Difference {
 	return diffs
 }
 
-// buildEnumRenameDiff produces the single `ALTER TYPE <old> RENAME TO <new>`
-// statement that replaces the create-new + drop-old + per-column-cast sequence
-// for a detected enum rename. The RENAME provides the new type name in the
-// dependency graph (see GetProvidedNames) so anything referencing the new type
-// in the same migration is ordered after it.
+// buildEnumRenameDiff emits the single `ALTER TYPE from RENAME TO to` that
+// replaces the create-new + drop-old + per-column-cast sequence. GetProvidedNames
+// advertises the new name so dependents order after the rename.
 func buildEnumRenameDiff(r enumRename) Difference {
 	alter := &tree.AlterType{
-		Type: r.old.Ast.TypeName,
+		Type: r.from.Ast.TypeName,
 		Cmd: &tree.AlterTypeRename{
-			NewName: tree.Name(r.new.Name),
+			NewName: tree.Name(r.to.Name),
 		},
 	}
 	return Difference{

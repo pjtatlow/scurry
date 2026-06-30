@@ -9,43 +9,23 @@ import (
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/types"
 )
 
-// enumRename describes a safe, unambiguous enum rename detected between the
-// remote (current DB) and local (desired) schemas. scurry has no first-class
-// rename concept, so without this detection a renamed enum is modeled as
-// drop-old-type + create-new-type + a per-column cast — and CockroachDB rejects
-// a direct enum->enum cast. When the rename is unambiguous we instead emit a
-// single `ALTER TYPE <old> RENAME TO <new>`, which CRDB supports and which
-// repoints every referencing column for free.
+// enumRename is a detected enum rename. scurry has no rename concept, so without
+// this a renamed enum becomes drop+create + a per-column cast — and CRDB rejects a
+// direct enum->enum cast. A detected rename emits one `ALTER TYPE from RENAME TO to`.
 type enumRename struct {
-	old ObjectSchema[*tree.CreateType] // enum present only in remote
-	new ObjectSchema[*tree.CreateType] // enum present only in local
+	from ObjectSchema[*tree.CreateType] // present only in remote
+	to   ObjectSchema[*tree.CreateType] // present only in local
 }
 
-func (r enumRename) oldName() string { return r.old.ResolvedName() }
-func (r enumRename) newName() string { return r.new.ResolvedName() }
+func (r enumRename) oldName() string { return r.from.ResolvedName() }
+func (r enumRename) newName() string { return r.to.ResolvedName() }
 
-// detectEnumRenames finds enum renames between the remote (current) and local
-// (desired) schemas.
-//
-// The detection is intentionally conservative: a false positive silently
-// renames the wrong type and corrupts data, so we only treat a drop+add pair as
-// a rename when the evidence is unambiguous. The rule is:
-//
-//  1. Candidate OLD enums are those present in remote but absent from local;
-//     candidate NEW enums are those present in local but absent from remote.
-//  2. A candidate pair must have an IDENTICAL, identically-ordered label set
-//     (same enum kind, same labels in the same order). To avoid ambiguity when
-//     several enums coincidentally share a label set, a given label set must map
-//     to EXACTLY ONE old candidate and EXACTLY ONE new candidate; otherwise none
-//     of them are treated as a rename and they fall back to drop+create.
-//  3. As an extra guard against two coincidentally same-labeled but unrelated
-//     enums, we additionally require concrete evidence that the rename happened:
-//     at least one table column whose type switched from the old enum to the new
-//     enum (remote column type == old, local column type == new). A genuine
-//     rename always carries its referencing columns along; an unrelated
-//     drop-then-add of a same-labeled enum does not. Enums with no referencing
-//     column are left to the safe drop+create path (dropping/creating an unused
-//     enum is harmless).
+// detectEnumRenames pairs a dropped and an added enum as a rename only when the
+// evidence is unambiguous — a false positive renames the wrong type and corrupts
+// data. Required: identical, identically-ordered labels; that label set maps to
+// exactly one dropped and one added enum in the same schema; and at least one
+// column actually switched from the old type to the new one. Anything else falls
+// back to the safe drop+create path.
 func detectEnumRenames(local, remote *Schema) []enumRename {
 	localEnums := enumTypesByName(local)
 	remoteEnums := enumTypesByName(remote)
@@ -55,53 +35,47 @@ func detectEnumRenames(local, remote *Schema) []enumRename {
 		news []ObjectSchema[*tree.CreateType]
 	}
 	buckets := make(map[string]*bucket)
-
 	bucketFor := func(sig string) *bucket {
-		b := buckets[sig]
-		if b == nil {
-			b = &bucket{}
-			buckets[sig] = b
+		if buckets[sig] == nil {
+			buckets[sig] = &bucket{}
 		}
-		return b
+		return buckets[sig]
 	}
 
 	for name, e := range remoteEnums {
-		if _, inLocal := localEnums[name]; inLocal {
-			continue
+		if _, inLocal := localEnums[name]; !inLocal {
+			b := bucketFor(enumLabelSignature(e.Ast))
+			b.olds = append(b.olds, e)
 		}
-		b := bucketFor(enumLabelSignature(e.Ast))
-		b.olds = append(b.olds, e)
 	}
 	for name, e := range localEnums {
-		if _, inRemote := remoteEnums[name]; inRemote {
-			continue
+		if _, inRemote := remoteEnums[name]; !inRemote {
+			b := bucketFor(enumLabelSignature(e.Ast))
+			b.news = append(b.news, e)
 		}
-		b := bucketFor(enumLabelSignature(e.Ast))
-		b.news = append(b.news, e)
 	}
 
 	switched := columnsSwitchedBetween(local, remote)
 
 	var renames []enumRename
 	for _, b := range buckets {
-		// Require a one-to-one match for this label set.
 		if len(b.olds) != 1 || len(b.news) != 1 {
 			continue
 		}
-		old, knew := b.olds[0], b.news[0]
-		// Require concrete evidence: a column actually switched old -> new.
-		if !switched[switchKey{old: old.ResolvedName(), new: knew.ResolvedName()}] {
+		from, to := b.olds[0], b.news[0]
+		if from.Schema != to.Schema {
 			continue
 		}
-		renames = append(renames, enumRename{old: old, new: knew})
+		if !switched[switchKey{old: from.ResolvedName(), new: to.ResolvedName()}] {
+			continue
+		}
+		renames = append(renames, enumRename{from: from, to: to})
 	}
 
 	sort.Slice(renames, func(i, j int) bool { return renames[i].oldName() < renames[j].oldName() })
 	return renames
 }
 
-// enumTypesByName returns the enum-variety types of a schema keyed by their
-// resolved (schema-qualified) name.
 func enumTypesByName(s *Schema) map[string]ObjectSchema[*tree.CreateType] {
 	out := make(map[string]ObjectSchema[*tree.CreateType])
 	for _, t := range s.Types {
@@ -112,8 +86,8 @@ func enumTypesByName(s *Schema) map[string]ObjectSchema[*tree.CreateType] {
 	return out
 }
 
-// enumLabelSignature returns an order-sensitive signature of an enum's labels.
-// Labels are quoted so the boundary between adjacent labels is unambiguous.
+// enumLabelSignature is an order-sensitive signature of an enum's labels; labels
+// are quoted so adjacent boundaries are unambiguous.
 func enumLabelSignature(ct *tree.CreateType) string {
 	labels := getEnumValues(ct)
 	parts := make([]string, len(labels))
@@ -128,32 +102,22 @@ type switchKey struct {
 	new string
 }
 
-// columnsSwitchedBetween returns the set of (oldType -> newType) UDT name pairs
-// for which at least one column (present in both the remote and local version
-// of the same table) changed its declared type from oldType to newType. Only
-// user-defined (named) types are recorded; scalar `*types.T` columns are
-// ignored because they can never be an enum rename target.
+// columnsSwitchedBetween returns the (oldType -> newType) UDT-name pairs for which
+// some column shared by both schema versions changed its declared type.
 func columnsSwitchedBetween(local, remote *Schema) map[switchKey]bool {
 	out := make(map[switchKey]bool)
-
 	remoteTables := make(map[string]ObjectSchema[*tree.CreateTable])
 	for _, t := range remote.Tables {
 		remoteTables[t.ResolvedName()] = t
 	}
-
 	for _, lt := range local.Tables {
 		rt, ok := remoteTables[lt.ResolvedName()]
 		if !ok {
 			continue
 		}
-		localCols := columnUDTNames(lt.Ast)
 		remoteCols := columnUDTNames(rt.Ast)
-		for col, localType := range localCols {
-			remoteType, ok := remoteCols[col]
-			if !ok {
-				continue
-			}
-			if localType != remoteType {
+		for col, localType := range columnUDTNames(lt.Ast) {
+			if remoteType, ok := remoteCols[col]; ok && remoteType != localType {
 				out[switchKey{old: remoteType, new: localType}] = true
 			}
 		}
@@ -161,32 +125,24 @@ func columnsSwitchedBetween(local, remote *Schema) map[switchKey]bool {
 	return out
 }
 
-// columnUDTNames maps each column with a user-defined (named) type to that
-// type's resolved name. Columns with scalar types are omitted.
 func columnUDTNames(ct *tree.CreateTable) map[string]string {
 	out := make(map[string]string)
 	for _, def := range ct.Defs {
-		cd, ok := def.(*tree.ColumnTableDef)
-		if !ok {
-			continue
-		}
-		if name, ok := getResolvableTypeReferenceDepName(cd.Type); ok {
-			out[cd.Name.Normalize()] = name
+		if cd, ok := def.(*tree.ColumnTableDef); ok {
+			if name, ok := getResolvableTypeReferenceDepName(cd.Type); ok {
+				out[cd.Name.Normalize()] = name
+			}
 		}
 	}
 	return out
 }
 
-// enumChangeContext carries cross-object enum information into the per-table
-// column comparison. It answers two questions the per-column diff needs:
-//   - is a column's target type an enum? (so a rewrite cast can be bridged
-//     through text: `col::STRING::newenum`, since CRDB rejects a direct
-//     enum->enum cast); and
-//   - is a column's type difference fully explained by a detected enum rename?
-//     (so the column needs no DDL at all — the ALTER TYPE ... RENAME repoints it).
+// enumChangeContext carries cross-object enum info into the per-column diff: which
+// target types are enums (so a rewrite can bridge through text) and which column
+// type differences are fully explained by a detected rename (so they need no DDL).
 type enumChangeContext struct {
-	localEnumNames map[string]bool   // resolved name -> true for enums defined locally
-	renameByOld    map[string]string // old resolved name -> new resolved name
+	localEnumNames map[string]bool
+	renameByOld    map[string]string
 }
 
 func newEnumChangeContext(local, remote *Schema) *enumChangeContext {
@@ -205,10 +161,9 @@ func newEnumChangeContext(local, remote *Schema) *enumChangeContext {
 	return ctx
 }
 
-// isEnumTarget reports whether the given (target/local) column type is an enum.
-// Enum columns parsed from SQL are unresolved object names rather than resolved
-// `*types.T` values, so we consult the set of locally-defined enum type names;
-// we also handle a resolved enum `*types.T` for completeness.
+// isEnumTarget reports whether a column's target type is an enum. SQL-parsed enum
+// columns are unresolved object names, not resolved *types.T, so we consult the
+// locally-defined enum names (and handle a resolved *types.T for completeness).
 func (c *enumChangeContext) isEnumTarget(t tree.ResolvableTypeReference) bool {
 	if tt, ok := t.(*types.T); ok {
 		return tt.Family() == types.EnumFamily
@@ -219,9 +174,6 @@ func (c *enumChangeContext) isEnumTarget(t tree.ResolvableTypeReference) bool {
 	return false
 }
 
-// explainedByRename reports whether the only difference between a remote and a
-// local column type is a detected enum rename (remote uses the old name, local
-// uses the new name). Such a column needs no type-change DDL.
 func (c *enumChangeContext) explainedByRename(remoteType, localType tree.ResolvableTypeReference) bool {
 	if len(c.renameByOld) == 0 {
 		return false

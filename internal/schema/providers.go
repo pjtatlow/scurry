@@ -160,8 +160,7 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 					names.Add(typeName + "." + enumVal)
 				}
 			case *tree.AlterTypeRename:
-				// After the rename the new type name exists; advertise it so
-				// statements referencing it order after the rename.
+				// Advertise the new name so dependents order after the rename.
 				newName := cmd.NewName.Normalize()
 				names.Add(schemaName + "." + newName)
 				if schemaName == "public" {

@@ -13,9 +13,7 @@ import (
 func compareTables(local, remote *Schema) []Difference {
 	diffs := make([]Difference, 0)
 
-	// Cross-object enum context: which target types are enums (for text-bridged
-	// rewrite casts) and which enums were renamed (so renamed-enum columns need
-	// no type-change DDL).
+	// Enum context for text-bridged rewrite casts and renamed-enum suppression.
 	enumCtx := newEnumChangeContext(local, remote)
 
 	// Build maps for quick lookup
@@ -240,10 +238,7 @@ func handleColumnTypeChanges(
 	for colName, localCol := range localComponents.columns {
 		if remoteCol, exists := remoteComponents.columns[colName]; exists {
 			if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
-				// If the only change is a detected enum rename, the ALTER TYPE
-				// ... RENAME already repoints this column; leave it in the maps
-				// so compareColumn can still pick up any other attribute change,
-				// but emit no type-change DDL here.
+				// A detected enum rename already repoints the column; no cast needed.
 				if enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
 					continue
 				}
@@ -371,14 +366,9 @@ func handleColumnTypeChanges(
 	}}
 }
 
-// buildColumnTypeChangeUsing builds the USING expression for an ALTER COLUMN
-// ... SET DATA TYPE that requires a rewrite.
-//
-// For a scalar target (int->int2, jsonb->bytes, etc.) we keep the direct cast
-// `col::newType`. For an enum target we MUST bridge through text
-// (`col::STRING::newType`): CockroachDB rejects a direct enum->enum cast
-// (`pq: invalid cast: <oldEnum> -> <newEnum>`), but casting via text succeeds
-// whenever the source value is a label of the target enum.
+// buildColumnTypeChangeUsing builds the USING expression for a rewriting ALTER
+// COLUMN. Enum targets bridge through text (`col::STRING::newType`) because CRDB
+// rejects a direct enum->enum cast; scalars keep the direct `col::newType`.
 func buildColumnTypeChangeUsing(localCol *tree.ColumnTableDef, enumCtx *enumChangeContext) tree.Expr {
 	colExpr := tree.NewUnresolvedName(string(localCol.Name))
 	if enumCtx.isEnumTarget(localCol.Type) {
@@ -508,8 +498,7 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	dangerous := false
 
 	// Check types - handle separately so we can prompt for USING expression.
-	// A difference fully explained by a detected enum rename needs no DDL: the
-	// ALTER TYPE ... RENAME already repointed this column.
+	// Skip when a detected enum rename already repoints the column.
 	if localCol.Type.SQLString() != remoteCol.Type.SQLString() && !enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
 		typeChangeCmd := &tree.AlterTableAlterColumnType{
 			Column: localCol.Name,
@@ -1296,13 +1285,8 @@ func typeChangeRequiresRewrite(localType, remoteType *types.T) bool {
 		return localType.Width() < remoteType.Width()
 
 	case types.EnumFamily:
-		// An enum target is handled deliberately: changing to a different enum
-		// always requires a rewrite, and its USING cast is bridged through text
-		// (see buildColumnTypeChangeUsing) because CRDB rejects a direct
-		// enum->enum cast. Note enum columns parsed from SQL are unresolved
-		// names rather than *types.T, so in practice they reach the rewrite path
-		// via handleColumnTypeChanges' "can't determine type" branch; this case
-		// makes the intent explicit for any resolved-enum *types.T as well.
+		// Enum changes always rewrite (cast bridged through text). Reached only for
+		// a resolved *types.T; SQL-parsed enums hit the "can't determine type" path.
 		return true
 
 	default:
