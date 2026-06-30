@@ -11,6 +11,20 @@ import (
 func compareTypes(local, remote *Schema) []Difference {
 	diffs := make([]Difference, 0)
 
+	// A renamed enum looks like "drop the old type, create the new type" to a
+	// naive diff. Detect unambiguous renames up front and emit a single
+	// ALTER TYPE ... RENAME TO for each, then suppress the spurious
+	// create/drop of the renamed type below. The matching column type-changes
+	// are suppressed in compareTables via the same detection.
+	renames := detectEnumRenames(local, remote)
+	renamedOld := make(map[string]bool)
+	renamedNew := make(map[string]bool)
+	for _, r := range renames {
+		renamedOld[r.oldName()] = true
+		renamedNew[r.newName()] = true
+		diffs = append(diffs, buildEnumRenameDiff(r))
+	}
+
 	// Build maps for quick lookup
 	localTypes := make(map[string]ObjectSchema[*tree.CreateType])
 	remoteTypes := make(map[string]ObjectSchema[*tree.CreateType])
@@ -24,6 +38,10 @@ func compareTypes(local, remote *Schema) []Difference {
 
 	// Find added and modified types
 	for name, localType := range localTypes {
+		// The new type is produced by the RENAME, not a CREATE.
+		if renamedNew[name] {
+			continue
+		}
 		remoteType, existsInRemote := remoteTypes[name]
 		if !existsInRemote {
 			// Type added - create it
@@ -48,6 +66,10 @@ func compareTypes(local, remote *Schema) []Difference {
 	// Find removed types
 	for name, remoteType := range remoteTypes {
 		if _, existsInLocal := localTypes[name]; !existsInLocal {
+			// The old type is consumed by the RENAME, not dropped.
+			if renamedOld[name] {
+				continue
+			}
 			// Type removed - drop it
 			drop := tree.DropType{
 				IfExists:     true,
@@ -65,6 +87,26 @@ func compareTypes(local, remote *Schema) []Difference {
 	}
 
 	return diffs
+}
+
+// buildEnumRenameDiff produces the single `ALTER TYPE <old> RENAME TO <new>`
+// statement that replaces the create-new + drop-old + per-column-cast sequence
+// for a detected enum rename. The RENAME provides the new type name in the
+// dependency graph (see GetProvidedNames) so anything referencing the new type
+// in the same migration is ordered after it.
+func buildEnumRenameDiff(r enumRename) Difference {
+	alter := &tree.AlterType{
+		Type: r.old.Ast.TypeName,
+		Cmd: &tree.AlterTypeRename{
+			NewName: tree.Name(r.new.Name),
+		},
+	}
+	return Difference{
+		Type:                DiffTypeTypeRenamed,
+		ObjectName:          r.oldName(),
+		Description:         fmt.Sprintf("Type '%s' renamed to '%s'", r.oldName(), r.newName()),
+		MigrationStatements: []tree.Statement{alter},
+	}
 }
 
 // compareTypeDetails compares the details of two types and generates appropriate migration DDL
