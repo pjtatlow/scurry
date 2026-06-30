@@ -22,6 +22,7 @@ const (
 	DiffTypeTypeAdded    DiffType = "type_added"
 	DiffTypeTypeRemoved  DiffType = "type_removed"
 	DiffTypeTypeModified DiffType = "type_modified"
+	DiffTypeTypeRenamed  DiffType = "type_renamed"
 
 	DiffTypeSequenceAdded    DiffType = "sequence_added"
 	DiffTypeSequenceRemoved  DiffType = "sequence_removed"

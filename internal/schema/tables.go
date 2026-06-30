@@ -13,6 +13,11 @@ import (
 func compareTables(local, remote *Schema) []Difference {
 	diffs := make([]Difference, 0)
 
+	// Cross-object enum context: which target types are enums (for text-bridged
+	// rewrite casts) and which enums were renamed (so renamed-enum columns need
+	// no type-change DDL).
+	enumCtx := newEnumChangeContext(local, remote)
+
 	// Build maps for quick lookup
 	localTables := make(map[string]ObjectSchema[*tree.CreateTable])
 	remoteTables := make(map[string]ObjectSchema[*tree.CreateTable])
@@ -37,7 +42,7 @@ func compareTables(local, remote *Schema) []Difference {
 			})
 		} else {
 			// Table exists in both - check for modifications
-			tableDiffs := compareTableModifications(name, localTable.Ast, remoteTable.Ast)
+			tableDiffs := compareTableModifications(name, localTable.Ast, remoteTable.Ast, enumCtx)
 			diffs = append(diffs, tableDiffs...)
 		}
 	}
@@ -114,7 +119,7 @@ func extractTableComponents(stmt *tree.CreateTable) *tableComponents {
 }
 
 // compareTableModifications compares two versions of the same table and returns differences
-func compareTableModifications(tableName string, local, remote *tree.CreateTable) []Difference {
+func compareTableModifications(tableName string, local, remote *tree.CreateTable, enumCtx *enumChangeContext) []Difference {
 	diffs := make([]Difference, 0)
 
 	localComponents := extractTableComponents(local)
@@ -123,7 +128,7 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	// Handle column type changes first - these need special handling because indexes/constraints
 	// that reference the changed columns must be dropped before the type change and recreated after.
 	// This function removes handled columns/indexes/constraints from the component maps.
-	typeChangeDiffs := handleColumnTypeChanges(tableName, local.Table, localComponents, remoteComponents)
+	typeChangeDiffs := handleColumnTypeChanges(tableName, local.Table, localComponents, remoteComponents, enumCtx)
 	diffs = append(diffs, typeChangeDiffs...)
 
 	// Detect newly-added columns before comparing (needed for partial index transaction boundaries)
@@ -161,7 +166,7 @@ func compareTableModifications(tableName string, local, remote *tree.CreateTable
 	// FamilyTableDef entries rather than on the ColumnTableDef.
 	localFamilies := buildColumnFamilyMap(local)
 	remoteFamilyNamesSet := remoteFamilyNames(remote)
-	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns, localFamilies, remoteFamilyNamesSet)
+	columnDiffs := compareColumns(tableName, local.Table, localComponents.columns, remoteComponents.columns, localFamilies, remoteFamilyNamesSet, enumCtx)
 
 	// For partial indexes that reference dropped columns in their WHERE predicate,
 	// emit standalone DROP INDEX diffs whose OriginalDependencies point at the
@@ -228,12 +233,20 @@ func handleColumnTypeChanges(
 	tableName string,
 	tableRef tree.TableName,
 	localComponents, remoteComponents *tableComponents,
+	enumCtx *enumChangeContext,
 ) []Difference {
 	typeChangedLocalCols := make(map[string]*tree.ColumnTableDef)
 	var typeChangedColNames []string
 	for colName, localCol := range localComponents.columns {
 		if remoteCol, exists := remoteComponents.columns[colName]; exists {
 			if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
+				// If the only change is a detected enum rename, the ALTER TYPE
+				// ... RENAME already repoints this column; leave it in the maps
+				// so compareColumn can still pick up any other attribute change,
+				// but emit no type-change DDL here.
+				if enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
+					continue
+				}
 				localType, localOk := localCol.Type.(*types.T)
 				remoteType, remoteOk := remoteCol.Type.(*types.T)
 				if localOk && remoteOk && typeChangeRequiresRewrite(localType, remoteType) {
@@ -300,11 +313,7 @@ func handleColumnTypeChanges(
 					&tree.AlterTableAlterColumnType{
 						Column: localCol.Name,
 						ToType: localCol.Type,
-						Using: &tree.CastExpr{
-							Expr:       tree.NewUnresolvedName(string(localCol.Name)),
-							Type:       localCol.Type,
-							SyntaxMode: tree.CastShort,
-						},
+						Using:  buildColumnTypeChangeUsing(localCol, enumCtx),
 					},
 				},
 			},
@@ -362,8 +371,36 @@ func handleColumnTypeChanges(
 	}}
 }
 
+// buildColumnTypeChangeUsing builds the USING expression for an ALTER COLUMN
+// ... SET DATA TYPE that requires a rewrite.
+//
+// For a scalar target (int->int2, jsonb->bytes, etc.) we keep the direct cast
+// `col::newType`. For an enum target we MUST bridge through text
+// (`col::STRING::newType`): CockroachDB rejects a direct enum->enum cast
+// (`pq: invalid cast: <oldEnum> -> <newEnum>`), but casting via text succeeds
+// whenever the source value is a label of the target enum.
+func buildColumnTypeChangeUsing(localCol *tree.ColumnTableDef, enumCtx *enumChangeContext) tree.Expr {
+	colExpr := tree.NewUnresolvedName(string(localCol.Name))
+	if enumCtx.isEnumTarget(localCol.Type) {
+		return &tree.CastExpr{
+			Expr: &tree.CastExpr{
+				Expr:       colExpr,
+				Type:       types.String,
+				SyntaxMode: tree.CastShort,
+			},
+			Type:       localCol.Type,
+			SyntaxMode: tree.CastShort,
+		}
+	}
+	return &tree.CastExpr{
+		Expr:       colExpr,
+		Type:       localCol.Type,
+		SyntaxMode: tree.CastShort,
+	}
+}
+
 // compareColumns finds differences in table columns.
-func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef, localFamilies map[string]string, remoteFamilies map[string]bool) []Difference {
+func compareColumns(tableName string, tableRef tree.TableName, localCols, remoteCols map[string]*tree.ColumnTableDef, localFamilies map[string]string, remoteFamilies map[string]bool, enumCtx *enumChangeContext) []Difference {
 	diffs := make([]Difference, 0)
 
 	// Skip the crdb_internal_expiration column - this is managed automatically by CockroachDB
@@ -399,7 +436,7 @@ func compareColumns(tableName string, tableRef tree.TableName, localCols, remote
 				MigrationStatements: []tree.Statement{createColumn},
 			})
 		} else {
-			diffs = append(diffs, compareColumn(tableName, colName, tableRef, localCol, remoteCols[colName])...)
+			diffs = append(diffs, compareColumn(tableName, colName, tableRef, localCol, remoteCols[colName], enumCtx)...)
 		}
 	}
 
@@ -427,7 +464,7 @@ func compareColumns(tableName string, tableRef tree.TableName, localCols, remote
 	return diffs
 }
 
-func compareColumn(tableName, colName string, tableRef tree.TableName, localCol, remoteCol *tree.ColumnTableDef) []Difference {
+func compareColumn(tableName, colName string, tableRef tree.TableName, localCol, remoteCol *tree.ColumnTableDef, enumCtx *enumChangeContext) []Difference {
 
 	dropAndCreate := func(description string) []Difference {
 		return []Difference{
@@ -470,8 +507,10 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 	cmds := make(tree.AlterTableCmds, 0)
 	dangerous := false
 
-	// Check types - handle separately so we can prompt for USING expression
-	if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
+	// Check types - handle separately so we can prompt for USING expression.
+	// A difference fully explained by a detected enum rename needs no DDL: the
+	// ALTER TYPE ... RENAME already repointed this column.
+	if localCol.Type.SQLString() != remoteCol.Type.SQLString() && !enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
 		typeChangeCmd := &tree.AlterTableAlterColumnType{
 			Column: localCol.Name,
 			ToType: localCol.Type,
@@ -1255,6 +1294,16 @@ func typeChangeRequiresRewrite(localType, remoteType *types.T) bool {
 			return false
 		}
 		return localType.Width() < remoteType.Width()
+
+	case types.EnumFamily:
+		// An enum target is handled deliberately: changing to a different enum
+		// always requires a rewrite, and its USING cast is bridged through text
+		// (see buildColumnTypeChangeUsing) because CRDB rejects a direct
+		// enum->enum cast. Note enum columns parsed from SQL are unresolved
+		// names rather than *types.T, so in practice they reach the rewrite path
+		// via handleColumnTypeChanges' "can't determine type" branch; this case
+		// makes the intent explicit for any resolved-enum *types.T as well.
+		return true
 
 	default:
 		return true

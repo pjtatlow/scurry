@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "dependencies.go",
         "diff.go",
+        "enum_rename.go",
         "expressions.go",
         "families.go",
         "format.go",
@@ -37,6 +38,8 @@ go_test(
     srcs = [
         "computed_column_fix_test.go",
         "diff_test.go",
+        "enum_rename_apply_test.go",
+        "enum_rename_test.go",
         "expressions_test.go",
         "migrations_test.go",
         "order_test.go",

@@ -152,11 +152,20 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 	case *tree.AlterType:
 		{
 			schemaName, typeName := getObjectName(s.Type)
-			if addVal, ok := s.Cmd.(*tree.AlterTypeAddValue); ok {
-				enumVal := string(addVal.NewVal)
+			switch cmd := s.Cmd.(type) {
+			case *tree.AlterTypeAddValue:
+				enumVal := string(cmd.NewVal)
 				names.Add(schemaName + "." + typeName + "." + enumVal)
 				if schemaName == "public" {
 					names.Add(typeName + "." + enumVal)
+				}
+			case *tree.AlterTypeRename:
+				// After the rename the new type name exists; advertise it so
+				// statements referencing it order after the rename.
+				newName := cmd.NewName.Normalize()
+				names.Add(schemaName + "." + newName)
+				if schemaName == "public" {
+					names.Add(newName)
 				}
 			}
 		}
