@@ -8,10 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// generateDDLFor builds the local/remote schemas from raw SQL and returns the
-// full migration DDL scurry would emit to turn remote into local. Tables carry
-// an explicit PRIMARY KEY constraint so they look like the round-tripped form
-// scurry sees in production (where every table has a named PK).
+// generateDDLFor returns the migration DDL scurry emits to turn remote into
+// local. Tables need an explicit PRIMARY KEY to match the round-tripped form.
 func generateDDLFor(t *testing.T, localSQL, remoteSQL []string) []string {
 	t.Helper()
 	local := NewSchema(parseStatements(localSQL...)...)
