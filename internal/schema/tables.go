@@ -237,7 +237,7 @@ func handleColumnTypeChanges(
 	var typeChangedColNames []string
 	for colName, localCol := range localComponents.columns {
 		if remoteCol, exists := remoteComponents.columns[colName]; exists {
-			if localCol.Type.SQLString() != remoteCol.Type.SQLString() {
+			if !columnTypesEqual(localCol.Type, remoteCol.Type) {
 				// A detected enum rename already repoints the column; no cast needed.
 				if enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
 					continue
@@ -499,7 +499,7 @@ func compareColumn(tableName, colName string, tableRef tree.TableName, localCol,
 
 	// Check types - handle separately so we can prompt for USING expression.
 	// Skip when a detected enum rename already repoints the column.
-	if localCol.Type.SQLString() != remoteCol.Type.SQLString() && !enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
+	if !columnTypesEqual(localCol.Type, remoteCol.Type) && !enumCtx.explainedByRename(remoteCol.Type, localCol.Type) {
 		typeChangeCmd := &tree.AlterTableAlterColumnType{
 			Column: localCol.Name,
 			ToType: localCol.Type,
