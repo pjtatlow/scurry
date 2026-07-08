@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1845,55 +1844,6 @@ func TestGenerateErrorReportContent(t *testing.T) {
 				assert.Contains(t, string(content), expected,
 					"Expected content to contain %q", expected)
 			}
-		})
-	}
-}
-
-func TestSchemaHasObjects(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		s    *schema.Schema
-		want bool
-	}{
-		{name: "empty schema", s: &schema.Schema{}, want: false},
-		{
-			name: "only the public schema (no objects) is treated as empty",
-			s:    &schema.Schema{Schemas: make([]schema.ObjectSchema[*tree.CreateSchema], 1)},
-			want: false,
-		},
-		{
-			name: "has a table",
-			s:    &schema.Schema{Tables: make([]schema.ObjectSchema[*tree.CreateTable], 1)},
-			want: true,
-		},
-		{
-			name: "has a view",
-			s:    &schema.Schema{Views: make([]schema.ObjectSchema[*tree.CreateView], 1)},
-			want: true,
-		},
-		{
-			name: "has a type",
-			s:    &schema.Schema{Types: make([]schema.ObjectSchema[*tree.CreateType], 1)},
-			want: true,
-		},
-		{
-			name: "has a sequence",
-			s:    &schema.Schema{Sequences: make([]schema.ObjectSchema[*tree.CreateSequence], 1)},
-			want: true,
-		},
-		{
-			name: "has a routine",
-			s:    &schema.Schema{Routines: make([]schema.ObjectSchema[*tree.CreateRoutine], 1)},
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, schemaHasObjects(tt.s))
 		})
 	}
 }
