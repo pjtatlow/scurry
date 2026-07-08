@@ -27,6 +27,20 @@ func ClassifyDifferences(diffs []schema.Difference, tableSizes *TableSizes) *Cla
 	return result
 }
 
+// ClassifyStatements determines whether a migration should be sync or async based on
+// its raw statements and table sizes. It applies the same per-statement rules as
+// ClassifyDifferences, for migrations authored directly (e.g. custom SQL supplied to
+// `migration local`) rather than generated from a schema diff.
+func ClassifyStatements(stmts []tree.Statement, tableSizes *TableSizes) *ClassifyResult {
+	result := &ClassifyResult{Mode: ModeSync}
+
+	for _, stmt := range stmts {
+		classifyStatement(stmt, tableSizes, result)
+	}
+
+	return result
+}
+
 func classifyDifference(diff *schema.Difference, ts *TableSizes, result *ClassifyResult) {
 	switch diff.Type {
 	case schema.DiffTypeTableAdded:
@@ -48,20 +62,72 @@ func classifyDifference(diff *schema.Difference, ts *TableSizes, result *Classif
 
 func classifyTableModification(diff *schema.Difference, ts *TableSizes, result *ClassifyResult) {
 	for _, stmt := range diff.MigrationStatements {
-		switch s := stmt.(type) {
-		case *tree.CreateIndex:
-			tableName := qualifiedTableName(s.Table)
-			if ts.IsLargeTable(tableName) {
-				markAsync(result, fmt.Sprintf("CREATE INDEX on large table %s", tableName))
-			}
+		classifyStatement(stmt, ts, result)
+	}
+}
 
-		case *tree.AlterTable:
-			tableName := qualifiedTableName(s.Table.ToTableName())
-			for _, cmd := range s.Cmds {
-				classifyAlterTableCmd(cmd, tableName, ts, result)
+// classifyStatement marks the result async if the single statement is an expensive
+// operation against a large table. Statements that don't touch a large table (or aren't
+// index/alter/bulk-DML operations, e.g. CREATE TABLE) leave the result unchanged (sync).
+func classifyStatement(stmt tree.Statement, ts *TableSizes, result *ClassifyResult) {
+	switch s := stmt.(type) {
+	case *tree.CreateIndex:
+		tableName := qualifiedTableName(s.Table)
+		if ts.IsLargeTable(tableName) {
+			markAsync(result, fmt.Sprintf("CREATE INDEX on large table %s", tableName))
+		}
+
+	case *tree.AlterTable:
+		tableName := qualifiedTableName(s.Table.ToTableName())
+		for _, cmd := range s.Cmds {
+			classifyAlterTableCmd(cmd, tableName, ts, result)
+		}
+
+	case *tree.Update:
+		// Data backfills (UPDATE across a large table) should roll out async.
+		if name, ok := dmlTargetTable(s.Table); ok && ts.IsLargeTable(name) {
+			markAsync(result, fmt.Sprintf("UPDATE on large table %s", name))
+		}
+
+	case *tree.Delete:
+		// Bulk deletes on a large table should roll out async.
+		if name, ok := dmlTargetTable(s.Table); ok && ts.IsLargeTable(name) {
+			markAsync(result, fmt.Sprintf("DELETE on large table %s", name))
+		}
+
+	case *tree.Insert:
+		// A bulk INSERT ... SELECT into a large table is expensive; a small
+		// INSERT ... VALUES (seed data) is not.
+		if isSelectSourcedInsert(s) {
+			if name, ok := dmlTargetTable(s.Table); ok && ts.IsLargeTable(name) {
+				markAsync(result, fmt.Sprintf("INSERT ... SELECT into large table %s", name))
 			}
 		}
 	}
+}
+
+// dmlTargetTable extracts the target table name from a DML statement's table expression.
+// It returns false when the target is not a simple table reference (e.g. a subquery).
+func dmlTargetTable(te tree.TableExpr) (string, bool) {
+	aliased, ok := te.(*tree.AliasedTableExpr)
+	if !ok {
+		return "", false
+	}
+	tn, ok := aliased.Expr.(*tree.TableName)
+	if !ok {
+		return "", false
+	}
+	return qualifiedTableName(*tn), true
+}
+
+// isSelectSourcedInsert reports whether an INSERT draws its rows from a SELECT (a bulk
+// copy) rather than a literal VALUES clause (small seed data).
+func isSelectSourcedInsert(ins *tree.Insert) bool {
+	if ins.Rows == nil || ins.Rows.Select == nil {
+		return false
+	}
+	_, isValues := ins.Rows.Select.(*tree.ValuesClause)
+	return !isValues
 }
 
 func classifyAlterTableCmd(cmd tree.AlterTableCmd, tableName string, ts *TableSizes, result *ClassifyResult) {

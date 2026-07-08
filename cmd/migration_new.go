@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
@@ -140,10 +141,26 @@ func doMigrationNew(ctx context.Context) error {
 		return fmt.Errorf("failed to apply migrations to schema: %w", err)
 	}
 
+	// Classify the statements and detect dependencies so scurry generates (and signs)
+	// the header, rather than leaving it unset. Manually-entered SQL never carries a
+	// hand-authored header.
+	astStmts := make([]tree.Statement, len(statements))
+	for i, stmt := range statements {
+		astStmts[i] = stmt.AST
+	}
+	existingMigrations, err := loadMigrations(fs)
+	if err != nil {
+		return fmt.Errorf("failed to load existing migrations: %w", err)
+	}
+	header, err := headerForStatements(fs, astStmts, existingMigrations, true)
+	if err != nil {
+		return err
+	}
+
 	// Create migration directory and file
 	fmt.Println(ui.Subtle("→ Creating migration..."))
 
-	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings, nil)
+	migrationDirName, _, err := createMigration(fs, migrationName, statementStrings, header)
 	if err != nil {
 		return fmt.Errorf("failed to create migration: %w", err)
 	}
