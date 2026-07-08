@@ -148,18 +148,18 @@ func TestMigrationLocalSuppliedSQL(t *testing.T) {
 			},
 		},
 		{
-			name:            "user-authored scurry header is rejected",
-			supplied:        "-- scurry:mode=async\nCREATE TABLE gizmos (id INT PRIMARY KEY);",
-			migName:         "add_gizmos",
-			wantErr:         true,
-			wantErrContains: "do not include a '-- scurry:' header",
-		},
-		{
-			name:            "malformed scurry header is rejected",
-			supplied:        "-- scurry:mode=bogus\nCREATE TABLE x (id INT PRIMARY KEY);",
-			migName:         "bad",
-			wantErr:         true,
-			wantErrContains: "do not include a '-- scurry:' header",
+			name:     "a scurry header in supplied SQL is an inert comment, not honored",
+			supplied: "-- scurry:mode=async\nCREATE TABLE gizmos (id INT PRIMARY KEY);",
+			migName:  "add_gizmos",
+			check: func(t *testing.T, ctx context.Context, fs afero.Fs, client *db.Client, result *MigrationLocalResult) {
+				assert.True(t, tableExists(t, ctx, client, "gizmos"))
+				applied, err := client.GetAppliedMigrations(ctx)
+				require.NoError(t, err)
+				require.Len(t, applied, 1)
+				// scurry prepends its own header and classifies from table sizes; the
+				// user's "mode=async" line is ignored (below scurry's header) → sync.
+				assert.False(t, applied[0].Async)
+			},
 		},
 		{
 			name:            "empty body errors",

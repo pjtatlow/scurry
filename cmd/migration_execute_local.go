@@ -202,13 +202,9 @@ func executeMigrationLocal(ctx context.Context, opts MigrationLocalOptions, errC
 	var header *migrationpkg.Header
 
 	if opts.UseSuppliedSQL {
-		// --- Supplied-SQL path: the body is used verbatim, no diffing. ---
-		// Scurry owns the `-- scurry:` header (mode/depends_on); users author only the
-		// migration body, so reject a hand-written header rather than honoring it.
-		if hdr, hdrErr := migrationpkg.ParseHeader(opts.SuppliedSQL); hdr != nil || hdrErr != nil {
-			return result, fmt.Errorf("do not include a '-- scurry:' header in supplied SQL; scurry manages migration metadata (mode is classified automatically from table sizes)")
-		}
-
+		// --- Supplied-SQL path: the body is used verbatim, no diffing. Scurry
+		// prepends its own generated header, so any `-- scurry:` line the user
+		// includes lands below it as an inert comment and is never honored. ---
 		rawBody = opts.SuppliedSQL
 		if strings.TrimSpace(rawBody) == "" {
 			return result, fmt.Errorf("supplied migration SQL is empty")
