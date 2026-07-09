@@ -125,29 +125,41 @@ func sanitizeMigrationName(name string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-// Helper function to create migration directory and file
-// Returns the migration directory name and the content written to migration.sql
-func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
+// writeMigrationFile creates a timestamped migration directory and writes the given
+// content verbatim to migration.sql. Returns the migration directory name.
+func writeMigrationFile(fs afero.Fs, name, content string) (string, error) {
 	// Generate timestamp prefix
 	timestamp := time.Now().UTC().Format("20060102150405")
 	migrationName := fmt.Sprintf("%s_%s", timestamp, sanitizeMigrationName(name))
 	migrationPath := filepath.Join(flags.MigrationDir, migrationName)
 
 	// Create migration directory
-	err := fs.MkdirAll(migrationPath, 0755)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create migration directory: %w", err)
+	if err := fs.MkdirAll(migrationPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create migration directory: %w", err)
 	}
 
 	// Write migration.sql
 	migrationFile := filepath.Join(migrationPath, "migration.sql")
-	content := strings.Join(statements, ";\n\n") + ";\n"
-	if header != nil {
-		content = migrationpkg.FormatHeader(header) + "\n" + content
+	if err := afero.WriteFile(fs, migrationFile, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("failed to write migration.sql: %w", err)
 	}
-	err = afero.WriteFile(fs, migrationFile, []byte(content), 0644)
+
+	return migrationName, nil
+}
+
+// Helper function to create migration directory and file
+// Returns the migration directory name and the content written to migration.sql
+func createMigration(fs afero.Fs, name string, statements []string, header *migrationpkg.Header) (string, string, error) {
+	body := strings.Join(statements, ";\n\n") + ";\n"
+	content := body
+	if header != nil {
+		migrationpkg.SignHeader(header, body)
+		content = migrationpkg.FormatHeader(header) + "\n" + body
+	}
+
+	migrationName, err := writeMigrationFile(fs, name, content)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to write migration.sql: %w", err)
+		return "", "", err
 	}
 
 	return migrationName, content, nil

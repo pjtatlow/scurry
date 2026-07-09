@@ -1,7 +1,10 @@
 package migration
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
@@ -21,11 +24,49 @@ const (
 
 const headerPrefix = "-- scurry:"
 
+// sigLength is the number of hex characters kept from the header signature. This is a
+// tamper/authorship tripwire, not a cryptographic guarantee, so a short prefix is fine.
+const sigLength = 12
+
 // Header holds parsed migration header metadata
 type Header struct {
 	Mode      MigrationMode
 	DependsOn []string
 	Squash    bool
+	// Sig is a short signature scurry writes over the header fields and body. It lets
+	// scurry detect a hand-authored or edited header (which won't carry a valid sig),
+	// forcing header generation through scurry (which classifies correctly). It is NOT
+	// part of the signed content.
+	Sig string
+}
+
+// ComputeSig returns the canonical signature for a header's semantic fields bound to its
+// migration body. It is deterministic: dependencies are sorted, and the sig itself is
+// excluded. Both generation and verification call this, so a matching sig means the
+// header is consistent with the body under scurry's algorithm.
+func ComputeSig(h *Header, body string) string {
+	deps := append([]string(nil), h.DependsOn...)
+	sort.Strings(deps)
+
+	var sb strings.Builder
+	sb.WriteString("mode=")
+	sb.WriteString(string(h.Mode))
+	sb.WriteString(";depends_on=")
+	sb.WriteString(strings.Join(deps, ";"))
+	if h.Squash {
+		sb.WriteString(";squash=true")
+	}
+	sb.WriteString(";body=")
+	sb.WriteString(body)
+
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:])[:sigLength]
+}
+
+// SignHeader sets h.Sig to the canonical signature over the header and the given body.
+// Call this immediately before formatting/writing a migration file.
+func SignHeader(h *Header, body string) {
+	h.Sig = ComputeSig(h, body)
 }
 
 // ParseHeader parses the first line of a migration SQL string for a scurry header.
@@ -64,6 +105,11 @@ func ParseHeader(sql string) (*Header, error) {
 				return nil, fmt.Errorf("squash must be \"true\"")
 			}
 			h.Squash = true
+		case "sig":
+			if value == "" {
+				return nil, fmt.Errorf("sig must not be empty")
+			}
+			h.Sig = value
 		default:
 			return nil, fmt.Errorf("unknown header field: %q", key)
 		}
@@ -90,6 +136,11 @@ func FormatHeader(h *Header) string {
 
 	if h.Squash {
 		sb.WriteString(",squash=true")
+	}
+
+	if h.Sig != "" {
+		sb.WriteString(",sig=")
+		sb.WriteString(h.Sig)
 	}
 
 	return sb.String()

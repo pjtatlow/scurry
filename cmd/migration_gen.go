@@ -150,20 +150,95 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		fmt.Printf("WARNING: %s \n\n", ui.Warning(fmt.Sprintf("%d. %s", i+1, warning)))
 	}
 
+	// Classify migration as sync or async
+	tableSizes, err := migrationpkg.LoadTableSizes(fs, flags.MigrationDir)
+	if err != nil {
+		return fmt.Errorf("failed to load table_sizes.yaml: %w", err)
+	}
+
+	classifyResult := migrationpkg.ClassifyDifferences(diffResult.Differences, tableSizes)
+
+	if classifyResult.Mode == migrationpkg.ModeAsync {
+		fmt.Println()
+		fmt.Println(ui.Warning("Migration classified as async:"))
+		for _, reason := range classifyResult.Reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+		fmt.Println()
+	}
+
+	header := &migrationpkg.Header{Mode: classifyResult.Mode}
+
+	// Validate the statements, resolve the name, detect dependencies, and write
+	// the migration file (with the interactive manual-edit fallback on failure).
+	_, newSchema, err := finalizeAuthoredMigration(ctx, fs, prodSchema, statements, "", header, migrationName, flags.Force, false, flags.Verbose)
+	if err != nil {
+		return err
+	}
+
+	// Update the production schema snapshot (schema.sql).
+	if flags.Verbose {
+		fmt.Println(ui.Subtle("→ Updating production schema..."))
+	}
+
+	if err := dumpProductionSchema(ctx, fs, newSchema); err != nil {
+		return fmt.Errorf("failed to update schema.sql: %w", err)
+	}
+
+	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
+
+	fmt.Println()
+	fmt.Println(ui.Info("Migration created successfully! Apply it to your database with: scurry migration execute"))
+
+	return nil
+}
+
+// finalizeAuthoredMigration takes a set of migration statements (either generated
+// from a diff or supplied directly) and turns them into a migration file: it
+// validates them against prodSchema on an ephemeral shadow database, resolves the
+// migration name, detects dependencies, and writes the file. It returns the created
+// migration directory name and the resulting schema (for advancing schema.sql).
+//
+// When applyMigrationsToSchema fails and the session is interactive (and not forced),
+// the user is dropped into a manual-edit form to fix the SQL. In non-interactive or
+// forced mode the validation error is returned directly.
+//
+// rawBody, when non-empty, is written to migration.sql verbatim (the --migration-sql
+// path, which preserves the user's exact SQL and comments); otherwise the file is
+// built from statements. If the user manually edits the SQL, rawBody is discarded in
+// favor of the edited statements. header.DependsOn is filled from object-level overlap
+// only when it is nil, so an explicitly supplied depends_on is respected.
+//
+// When dryRun is true, the migration is validated but no file is written; the resulting
+// schema is still returned.
+func finalizeAuthoredMigration(
+	ctx context.Context,
+	fs afero.Fs,
+	prodSchema *schema.Schema,
+	statements []string,
+	rawBody string,
+	header *migrationpkg.Header,
+	name string,
+	force, dryRun, verbose bool,
+) (string, *schema.Schema, error) {
+	// 1. Validate the migration against the snapshot on an ephemeral shadow DB.
 	newSchema, err := applyMigrationsToSchema(ctx, prodSchema, statements)
 	if err != nil {
-		// Migration failed to apply - prompt user to create a manual migration
+		// Without a TTY (or when forced) there is no way to fix it interactively.
+		if force || !ui.IsInteractive() {
+			return "", nil, fmt.Errorf("failed to apply migrations to schema: %w", err)
+		}
+
 		fmt.Println(ui.Error(fmt.Sprintf("Failed to apply generated migration: %v", err)))
 		fmt.Println()
 		fmt.Println(ui.Info("The generated migration could not be applied. This may require manual intervention."))
 
 		confirmed, confirmErr := ui.ConfirmPrompt("Would you like to create a manual migration instead?")
 		if confirmErr != nil {
-			return fmt.Errorf("confirmation prompt failed: %w", confirmErr)
+			return "", nil, fmt.Errorf("confirmation prompt failed: %w", confirmErr)
 		}
-
 		if !confirmed {
-			return fmt.Errorf("failed to apply migrations to schema: %w", err)
+			return "", nil, fmt.Errorf("failed to apply migrations to schema: %w", err)
 		}
 
 		// Pre-populate with the generated statements
@@ -192,39 +267,34 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 		).WithTheme(ui.HuhTheme())
 
 		if err := form.Run(); err != nil {
-			return fmt.Errorf("migration input canceled: %w", err)
+			return "", nil, fmt.Errorf("migration input canceled: %w", err)
 		}
 
 		// Parse edited statements
 		parsedStatements, err := parser.Parse(sqlStatements)
 		if err != nil {
-			return fmt.Errorf("failed to parse SQL: %w", err)
+			return "", nil, fmt.Errorf("failed to parse SQL: %w", err)
 		}
 
-		// Convert parsed statements to strings
+		// Convert parsed statements to strings; the edited SQL supersedes any raw body.
 		statements = nil
 		for _, stmt := range parsedStatements {
 			statements = append(statements, stmt.AST.String())
 		}
+		rawBody = ""
 
 		// Try to apply the edited migration
 		newSchema, err = applyMigrationsToSchema(ctx, prodSchema, statements)
 		if err != nil {
-			return fmt.Errorf("failed to apply edited migrations to schema: %w", err)
+			return "", nil, fmt.Errorf("failed to apply edited migrations to schema: %w", err)
 		}
 	}
 
-	// 5. Get migration name (from flag or prompt)
-	var name string
-	if migrationName != "" {
-		// Use the name from the flag
-		name = migrationName
-	} else {
-		// Check for interactive terminal when prompting for name
+	// 2. Resolve the migration name (from flag/argument or interactive prompt).
+	if name == "" {
 		if !ui.IsInteractive() {
-			return fmt.Errorf("migration name required in non-interactive mode\nUse --name flag to specify the migration name")
+			return "", nil, fmt.Errorf("migration name required in non-interactive mode\nUse --name flag to specify the migration name")
 		}
-		// Ask user for migration name
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().
@@ -241,83 +311,59 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 			),
 		).WithTheme(ui.HuhTheme())
 
-		err = form.Run()
-		if err != nil {
-			return fmt.Errorf("migration name input canceled: %w", err)
+		if err := form.Run(); err != nil {
+			return "", nil, fmt.Errorf("migration name input canceled: %w", err)
 		}
 	}
 
-	// Classify migration as sync or async
-	tableSizes, err := migrationpkg.LoadTableSizes(fs, flags.MigrationDir)
-	if err != nil {
-		return fmt.Errorf("failed to load table_sizes.yaml: %w", err)
-	}
-
-	classifyResult := migrationpkg.ClassifyDifferences(diffResult.Differences, tableSizes)
-
-	if classifyResult.Mode == migrationpkg.ModeAsync {
-		fmt.Println()
-		fmt.Println(ui.Warning("Migration classified as async:"))
-		for _, reason := range classifyResult.Reasons {
-			fmt.Printf("  - %s\n", reason)
-		}
-		fmt.Println()
-	}
-
-	// Build header with mode and smart dependency detection
-	header := &migrationpkg.Header{Mode: classifyResult.Mode}
-
-	// Parse new migration statements for dependency detection
-	var newStmts []tree.Statement
-	for _, s := range statements {
-		parsed, err := parser.Parse(s)
-		if err == nil {
-			for _, p := range parsed {
-				newStmts = append(newStmts, p.AST)
+	// 3. Detect dependencies from object-level overlap (unless already supplied).
+	if header.DependsOn == nil {
+		var newStmts []tree.Statement
+		for _, s := range statements {
+			parsed, err := parser.Parse(s)
+			if err == nil {
+				for _, p := range parsed {
+					newStmts = append(newStmts, p.AST)
+				}
 			}
 		}
-	}
 
-	// Find dependencies based on object-level overlap
-	existingMigrations, err := loadMigrations(fs)
-	if err == nil && len(existingMigrations) > 0 {
-		migInfos := make([]migrationpkg.MigrationInfo, len(existingMigrations))
-		for i, m := range existingMigrations {
-			migInfos[i] = migrationpkg.MigrationInfo{Name: m.Name, SQL: m.SQL}
+		existingMigrations, err := loadMigrations(fs)
+		if err == nil && len(existingMigrations) > 0 {
+			migInfos := make([]migrationpkg.MigrationInfo, len(existingMigrations))
+			for i, m := range existingMigrations {
+				migInfos[i] = migrationpkg.MigrationInfo{Name: m.Name, SQL: m.SQL}
+			}
+			header.DependsOn = migrationpkg.FindDependencies(newStmts, migInfos)
 		}
-		header.DependsOn = migrationpkg.FindDependencies(newStmts, migInfos)
 	}
 
-	// Create migration directory and file
-	if flags.Verbose {
+	// 4. In dry-run mode, stop before writing anything.
+	if dryRun {
+		return "", newSchema, nil
+	}
+
+	// 5. Write the migration file.
+	if verbose {
 		fmt.Println()
 		fmt.Println(ui.Subtle("→ Creating migration..."))
 	}
 
-	migrationDirName, _, err := createMigration(fs, name, statements, header)
+	var dirName string
+	if rawBody != "" {
+		migrationpkg.SignHeader(header, rawBody)
+		content := migrationpkg.FormatHeader(header) + "\n" + rawBody
+		dirName, err = writeMigrationFile(fs, name, content)
+	} else {
+		dirName, _, err = createMigration(fs, name, statements, header)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to create migration: %w", err)
+		return "", nil, fmt.Errorf("failed to create migration: %w", err)
 	}
 
-	fmt.Println(ui.Success(fmt.Sprintf("✓ Created migration: %s", migrationDirName)))
+	fmt.Println(ui.Success(fmt.Sprintf("✓ Created migration: %s", dirName)))
 
-	// 6. Apply migrations to production schema
-	if flags.Verbose {
-		fmt.Println(ui.Subtle("→ Updating production schema..."))
-	}
-
-	// 7. Dump new schema to schema.sql
-	err = dumpProductionSchema(ctx, fs, newSchema)
-	if err != nil {
-		return fmt.Errorf("failed to update schema.sql: %w", err)
-	}
-
-	fmt.Println(ui.Success(fmt.Sprintf("✓ Updated %s", getSchemaFilePath())))
-
-	fmt.Println()
-	fmt.Println(ui.Info("Migration created successfully! Apply it to your database with: scurry migration execute"))
-
-	return nil
+	return dirName, newSchema, nil
 }
 
 // promptForUsingExpressionsGen checks for column type changes and prompts the user

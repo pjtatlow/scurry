@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
@@ -22,6 +24,8 @@ import (
 var (
 	validateOverwrite    bool
 	validateNoCheckpoint bool
+	validateSign         bool
+	validateRequireSig   bool
 )
 
 var migrationValidateCmd = &cobra.Command{
@@ -36,6 +40,8 @@ func init() {
 	migrationCmd.AddCommand(migrationValidateCmd)
 	migrationValidateCmd.Flags().BoolVar(&validateOverwrite, "overwrite", false, "Overwrite schema.sql with the result instead of comparing")
 	migrationValidateCmd.Flags().BoolVar(&validateNoCheckpoint, "no-checkpoint", false, "Skip checkpoint generation after successful validation")
+	migrationValidateCmd.Flags().BoolVar(&validateSign, "sign", false, "Backfill/refresh scurry header signatures on all migrations, then exit")
+	migrationValidateCmd.Flags().BoolVar(&validateRequireSig, "require-signatures", false, "Fail when a migration is missing its scurry header signature (not just an invalid one)")
 }
 
 func migrationValidate(cmd *cobra.Command, args []string) error {
@@ -80,6 +86,17 @@ func doMigrationValidate(ctx context.Context) error {
 
 	if flags.Verbose {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d migration(s)", len(migrations))))
+	}
+
+	// --sign is a distinct mode: (re)write header signatures and exit.
+	if validateSign {
+		return signMigrationHeaders(fs, migrations)
+	}
+
+	// Verify header signatures before anything else so a hand-authored or edited
+	// header (which won't carry a valid scurry signature) is caught early.
+	if err := verifyAndReportSignatures(fs, migrations); err != nil {
+		return err
 	}
 
 	// 2. Apply migrations to empty shadow database
@@ -476,4 +493,158 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []db.Migration, re
 	}
 
 	return nil
+}
+
+// sigStatus is the signature state of a single migration's header.
+type sigStatus int
+
+const (
+	sigOK      sigStatus = iota // present and matches
+	sigMissing                  // no header, or header without a signature
+	sigInvalid                  // signature present but does not match (edited/forged/malformed)
+)
+
+// checkMigrationSignature reads a migration file and classifies its header signature.
+func checkMigrationSignature(fs afero.Fs, name string) (sigStatus, error) {
+	raw, err := afero.ReadFile(fs, filepath.Join(flags.MigrationDir, name, "migration.sql"))
+	if err != nil {
+		return sigInvalid, fmt.Errorf("failed to read migration %s: %w", name, err)
+	}
+	content := string(raw)
+
+	header, err := migrationpkg.ParseHeader(content)
+	if err != nil {
+		// A malformed header can't have a valid signature.
+		return sigInvalid, nil
+	}
+	if header == nil || header.Sig == "" {
+		return sigMissing, nil
+	}
+	if migrationpkg.ComputeSig(header, migrationpkg.StripHeader(content)) != header.Sig {
+		return sigInvalid, nil
+	}
+	return sigOK, nil
+}
+
+// verifyAndReportSignatures verifies every migration's header signature. An invalid
+// signature (edited or hand-authored header) is always a failure; a missing signature is
+// a warning unless --require-signatures is set. Backfill existing migrations with --sign.
+func verifyAndReportSignatures(fs afero.Fs, migrations []db.Migration) error {
+	var invalid, missing []string
+	for _, m := range migrations {
+		status, err := checkMigrationSignature(fs, m.Name)
+		if err != nil {
+			return err
+		}
+		switch status {
+		case sigInvalid:
+			invalid = append(invalid, m.Name)
+		case sigMissing:
+			missing = append(missing, m.Name)
+		}
+	}
+
+	for _, name := range invalid {
+		fmt.Println(ui.Error(fmt.Sprintf("✗ %s: invalid scurry header signature — the header was hand-authored or edited. Regenerate it with scurry (never hand-author the '-- scurry:' header).", name)))
+	}
+	for _, name := range missing {
+		if validateRequireSig {
+			fmt.Println(ui.Error(fmt.Sprintf("✗ %s: missing scurry header signature", name)))
+		} else {
+			fmt.Println(ui.Warning(fmt.Sprintf("⚠ %s: missing scurry header signature (run 'scurry migration validate --sign' to backfill)", name)))
+		}
+	}
+
+	if len(invalid) > 0 || (validateRequireSig && len(missing) > 0) {
+		return fmt.Errorf("migration header signature check failed")
+	}
+	return nil
+}
+
+// signMigrationHeaders (re)writes the scurry signature on every migration. A migration
+// that already has a header is blessed as-is (its mode/depends_on are preserved and
+// signed); a header-less migration is classified from its body so it gains a valid
+// header. The result is reviewable in version control before committing.
+func signMigrationHeaders(fs afero.Fs, migrations []db.Migration) error {
+	changed := 0
+	for i, m := range migrations {
+		path := filepath.Join(flags.MigrationDir, m.Name, "migration.sql")
+		raw, err := afero.ReadFile(fs, path)
+		if err != nil {
+			return fmt.Errorf("failed to read migration %s: %w", m.Name, err)
+		}
+		content := string(raw)
+		body := migrationpkg.StripHeader(content)
+
+		header, err := migrationpkg.ParseHeader(content)
+		if err != nil {
+			return fmt.Errorf("migration %s has an unparseable header; fix it before signing: %w", m.Name, err)
+		}
+		if header == nil {
+			// No header at all: classify the body so it gains a valid one.
+			header, err = deriveHeaderForBody(fs, body, migrations[:i])
+			if err != nil {
+				return fmt.Errorf("failed to derive header for %s: %w", m.Name, err)
+			}
+		}
+
+		migrationpkg.SignHeader(header, body)
+		newContent := migrationpkg.FormatHeader(header) + "\n" + body
+		if newContent == content {
+			continue
+		}
+		if err := afero.WriteFile(fs, path, []byte(newContent), 0644); err != nil {
+			return fmt.Errorf("failed to write migration %s: %w", m.Name, err)
+		}
+		changed++
+	}
+
+	fmt.Println(ui.Success(fmt.Sprintf("✓ Signed %d migration(s) (%d already up to date)", changed, len(migrations)-changed)))
+	return nil
+}
+
+// headerForStatements builds the canonical header scurry should write for a set of
+// migration statements: it classifies them sync/async against table sizes and detects
+// dependencies on prior migrations. When announce is true and the result is async, the
+// classification reasons are printed. This is the single place custom/manually-authored
+// migrations get their header, so it can never be hand-supplied.
+func headerForStatements(fs afero.Fs, stmts []tree.Statement, prior []db.Migration, announce bool) (*migrationpkg.Header, error) {
+	tableSizes, err := migrationpkg.LoadTableSizes(fs, flags.MigrationDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load table_sizes.yaml: %w", err)
+	}
+
+	result := migrationpkg.ClassifyStatements(stmts, tableSizes)
+	if announce && result.Mode == migrationpkg.ModeAsync {
+		fmt.Println()
+		fmt.Println(ui.Warning("Migration classified as async:"))
+		for _, reason := range result.Reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+		fmt.Println()
+	}
+
+	header := &migrationpkg.Header{Mode: result.Mode}
+
+	migInfos := make([]migrationpkg.MigrationInfo, len(prior))
+	for i, m := range prior {
+		migInfos[i] = migrationpkg.MigrationInfo{Name: m.Name, SQL: m.SQL}
+	}
+	header.DependsOn = migrationpkg.FindDependencies(stmts, migInfos)
+
+	return header, nil
+}
+
+// deriveHeaderForBody builds a canonical header for a header-less migration body by
+// parsing it and classifying its statements.
+func deriveHeaderForBody(fs afero.Fs, body string, prior []db.Migration) (*migrationpkg.Header, error) {
+	parsed, err := parser.Parse(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse migration body: %w", err)
+	}
+	stmts := make([]tree.Statement, len(parsed))
+	for i, p := range parsed {
+		stmts[i] = p.AST
+	}
+	return headerForStatements(fs, stmts, prior, false)
 }

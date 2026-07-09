@@ -3,9 +3,11 @@ package migration
 import (
 	"testing"
 
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pjtatlow/scurry/internal/schema"
 )
@@ -402,6 +404,98 @@ func TestClassifyDifferences(t *testing.T) {
 			} else {
 				assert.Empty(t, result.Reasons)
 			}
+		})
+	}
+}
+
+// TestClassifyStatements covers classifying raw migration statements (as used for
+// custom SQL supplied to `migration local`) against table sizes.
+func TestClassifyStatements(t *testing.T) {
+	tests := []struct {
+		name       string
+		sql        string
+		tableSizes *TableSizes
+		wantMode   MigrationMode
+	}{
+		{
+			name:       "create index on large table is async",
+			sql:        "CREATE INDEX idx ON posts (author_id)",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+		{
+			name:       "create index on small table is sync",
+			sql:        "CREATE INDEX idx ON small_table (x)",
+			tableSizes: smallTableSizes(),
+			wantMode:   ModeSync,
+		},
+		{
+			name:       "create table is always sync",
+			sql:        "CREATE TABLE posts (id INT PRIMARY KEY)",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeSync,
+		},
+		{
+			name:       "add column not null default on large table is async",
+			sql:        "ALTER TABLE users ADD COLUMN active BOOL NOT NULL DEFAULT true",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+		{
+			name:       "update backfill on large table is async",
+			sql:        "UPDATE posts SET author_id = 1 WHERE author_id IS NULL",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+		{
+			name:       "update on small table is sync",
+			sql:        "UPDATE small_table SET x = 1",
+			tableSizes: smallTableSizes(),
+			wantMode:   ModeSync,
+		},
+		{
+			name:       "delete on large table is async",
+			sql:        "DELETE FROM posts WHERE created_at < '2020-01-01'",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+		{
+			name:       "insert select into large table is async",
+			sql:        "INSERT INTO posts (id) SELECT id FROM other",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+		{
+			name:       "insert values into large table is sync (small seed)",
+			sql:        "INSERT INTO posts (id) VALUES (1), (2)",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeSync,
+		},
+		{
+			name:       "nil table sizes classifies sync",
+			sql:        "CREATE INDEX idx ON posts (author_id)",
+			tableSizes: nil,
+			wantMode:   ModeSync,
+		},
+		{
+			name:       "any async statement makes the whole migration async",
+			sql:        "CREATE TABLE t (id INT PRIMARY KEY); CREATE INDEX idx ON posts (author_id)",
+			tableSizes: largeTableSizes(),
+			wantMode:   ModeAsync,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := parser.Parse(tt.sql)
+			require.NoError(t, err)
+			stmts := make([]tree.Statement, len(parsed))
+			for i, p := range parsed {
+				stmts[i] = p.AST
+			}
+			result := ClassifyStatements(stmts, tt.tableSizes)
+			assert.Equal(t, tt.wantMode, result.Mode)
 		})
 	}
 }

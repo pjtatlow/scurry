@@ -276,6 +276,47 @@ func TestFormatThenParse(t *testing.T) {
 	}
 }
 
+func TestHeaderSignature(t *testing.T) {
+	t.Parallel()
+
+	body := "CREATE TABLE users (id INT PRIMARY KEY);\n"
+
+	t.Run("sign then verify round-trips through format/parse", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeAsync, DependsOn: []string{"20250101000000_a"}}
+		SignHeader(h, body)
+		require.NotEmpty(t, h.Sig)
+
+		parsed, err := ParseHeader(FormatHeader(h) + "\n" + body)
+		require.NoError(t, err)
+		assert.Equal(t, h.Sig, parsed.Sig)
+		assert.Equal(t, h.Sig, ComputeSig(parsed, body), "recomputed signature matches")
+	})
+
+	t.Run("editing the body breaks the signature", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeSync}
+		SignHeader(h, body)
+		assert.NotEqual(t, h.Sig, ComputeSig(h, body+"ALTER TABLE users ADD COLUMN x INT;\n"))
+	})
+
+	t.Run("flipping the mode breaks the signature", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeSync}
+		SignHeader(h, body)
+		// An agent flips mode to async but keeps the old signature.
+		forged := &Header{Mode: ModeAsync, Sig: h.Sig}
+		assert.NotEqual(t, forged.Sig, ComputeSig(forged, body))
+	})
+
+	t.Run("signature is independent of dependency order", func(t *testing.T) {
+		t.Parallel()
+		a := &Header{Mode: ModeSync, DependsOn: []string{"x", "y"}}
+		b := &Header{Mode: ModeSync, DependsOn: []string{"y", "x"}}
+		assert.Equal(t, ComputeSig(a, body), ComputeSig(b, body))
+	})
+}
+
 func parseStatements(t *testing.T, sql string) []tree.Statement {
 	t.Helper()
 	parsed, err := parser.Parse(sql)
