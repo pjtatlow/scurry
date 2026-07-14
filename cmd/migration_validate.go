@@ -21,11 +21,17 @@ import (
 	"github.com/pjtatlow/scurry/internal/ui"
 )
 
+const (
+	signaturesNoVerify = "no-verify"
+	signaturesVerify   = "verify"
+	signaturesRequire  = "require"
+	signaturesFix      = "fix"
+)
+
 var (
 	validateOverwrite    bool
 	validateNoCheckpoint bool
-	validateSign         bool
-	validateRequireSig   bool
+	validateSignatures   string
 )
 
 var migrationValidateCmd = &cobra.Command{
@@ -40,8 +46,7 @@ func init() {
 	migrationCmd.AddCommand(migrationValidateCmd)
 	migrationValidateCmd.Flags().BoolVar(&validateOverwrite, "overwrite", false, "Overwrite schema.sql with the result instead of comparing")
 	migrationValidateCmd.Flags().BoolVar(&validateNoCheckpoint, "no-checkpoint", false, "Skip checkpoint generation after successful validation")
-	migrationValidateCmd.Flags().BoolVar(&validateSign, "sign", false, "Backfill/refresh scurry header signatures on all migrations, then exit")
-	migrationValidateCmd.Flags().BoolVar(&validateRequireSig, "require-signatures", false, "Fail when a migration is missing its scurry header signature (not just an invalid one)")
+	migrationValidateCmd.Flags().StringVar(&validateSignatures, "signatures", signaturesNoVerify, "Signature handling mode: no-verify, verify, require, or fix")
 }
 
 func migrationValidate(cmd *cobra.Command, args []string) error {
@@ -58,6 +63,9 @@ func migrationValidate(cmd *cobra.Command, args []string) error {
 
 func doMigrationValidate(ctx context.Context) error {
 	fs := afero.NewOsFs()
+	if err := validateSignaturesMode(validateSignatures); err != nil {
+		return err
+	}
 
 	// Validate migrations directory
 	if err := validateMigrationsDir(fs); err != nil {
@@ -88,15 +96,12 @@ func doMigrationValidate(ctx context.Context) error {
 		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d migration(s)", len(migrations))))
 	}
 
-	// --sign is a distinct mode: (re)write header signatures and exit.
-	if validateSign {
-		return signMigrationHeaders(fs, migrations)
-	}
-
-	// Verify header signatures before anything else so a hand-authored or edited
-	// header (which won't carry a valid scurry signature) is caught early.
-	if err := verifyAndReportSignatures(fs, migrations); err != nil {
+	signaturesOnly, err := handleMigrationSignatures(fs, migrations, validateSignatures)
+	if err != nil {
 		return err
+	}
+	if signaturesOnly {
+		return nil
 	}
 
 	// 2. Apply migrations to empty shadow database
@@ -520,16 +525,43 @@ func checkMigrationSignature(fs afero.Fs, name string) (sigStatus, error) {
 	if header == nil || header.Sig == "" {
 		return sigMissing, nil
 	}
-	if migrationpkg.ComputeSig(header, migrationpkg.StripHeader(content)) != header.Sig {
+	sig, err := migrationpkg.ComputeSig(header, migrationpkg.StripHeader(content))
+	if err != nil || sig != header.Sig {
 		return sigInvalid, nil
 	}
 	return sigOK, nil
 }
 
+func validateSignaturesMode(mode string) error {
+	switch mode {
+	case signaturesNoVerify, signaturesVerify, signaturesRequire, signaturesFix:
+		return nil
+	default:
+		return fmt.Errorf("invalid --signatures value %q: must be one of no-verify, verify, require, or fix", mode)
+	}
+}
+
+// handleMigrationSignatures applies the requested signature mode. The returned bool is
+// true for fix mode, which is a distinct operation that exits after rewriting headers.
+func handleMigrationSignatures(fs afero.Fs, migrations []db.Migration, mode string) (bool, error) {
+	switch mode {
+	case signaturesNoVerify:
+		return false, nil
+	case signaturesVerify:
+		return false, verifyAndReportSignatures(fs, migrations, false)
+	case signaturesRequire:
+		return false, verifyAndReportSignatures(fs, migrations, true)
+	case signaturesFix:
+		return true, signMigrationHeaders(fs, migrations)
+	default:
+		return false, fmt.Errorf("invalid --signatures value %q", mode)
+	}
+}
+
 // verifyAndReportSignatures verifies every migration's header signature. An invalid
 // signature (edited or hand-authored header) is always a failure; a missing signature is
-// a warning unless --require-signatures is set. Backfill existing migrations with --sign.
-func verifyAndReportSignatures(fs afero.Fs, migrations []db.Migration) error {
+// a warning unless require is true. Backfill existing migrations with --signatures=fix.
+func verifyAndReportSignatures(fs afero.Fs, migrations []db.Migration, require bool) error {
 	var invalid, missing []string
 	for _, m := range migrations {
 		status, err := checkMigrationSignature(fs, m.Name)
@@ -548,14 +580,14 @@ func verifyAndReportSignatures(fs afero.Fs, migrations []db.Migration) error {
 		fmt.Println(ui.Error(fmt.Sprintf("✗ %s: invalid scurry header signature — the header was hand-authored or edited. Regenerate it with scurry (never hand-author the '-- scurry:' header).", name)))
 	}
 	for _, name := range missing {
-		if validateRequireSig {
+		if require {
 			fmt.Println(ui.Error(fmt.Sprintf("✗ %s: missing scurry header signature", name)))
 		} else {
-			fmt.Println(ui.Warning(fmt.Sprintf("⚠ %s: missing scurry header signature (run 'scurry migration validate --sign' to backfill)", name)))
+			fmt.Println(ui.Warning(fmt.Sprintf("⚠ %s: missing scurry header signature (run 'scurry migration validate --signatures=fix' to backfill)", name)))
 		}
 	}
 
-	if len(invalid) > 0 || (validateRequireSig && len(missing) > 0) {
+	if len(invalid) > 0 || (require && len(missing) > 0) {
 		return fmt.Errorf("migration header signature check failed")
 	}
 	return nil
@@ -588,7 +620,9 @@ func signMigrationHeaders(fs afero.Fs, migrations []db.Migration) error {
 			}
 		}
 
-		migrationpkg.SignHeader(header, body)
+		if err := migrationpkg.SignHeader(header, body); err != nil {
+			return fmt.Errorf("failed to sign migration %s: %w", m.Name, err)
+		}
 		newContent := migrationpkg.FormatHeader(header) + "\n" + body
 		if newContent == content {
 			continue

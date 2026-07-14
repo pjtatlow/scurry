@@ -15,9 +15,10 @@ import (
 )
 
 // signedContent returns a properly scurry-signed migration file for the given body.
-func signedContent(body string) string {
+func signedContent(t *testing.T, body string) string {
+	t.Helper()
 	h := &migrationpkg.Header{Mode: migrationpkg.ModeSync}
-	migrationpkg.SignHeader(h, body)
+	require.NoError(t, migrationpkg.SignHeader(h, body))
 	return migrationpkg.FormatHeader(h) + "\n" + body
 }
 
@@ -26,7 +27,7 @@ func TestCheckMigrationSignature(t *testing.T) {
 
 	body := "CREATE TABLE t (id INT PRIMARY KEY);\n"
 	signed := &migrationpkg.Header{Mode: migrationpkg.ModeSync}
-	migrationpkg.SignHeader(signed, body)
+	require.NoError(t, migrationpkg.SignHeader(signed, body))
 
 	tests := []struct {
 		name    string
@@ -38,6 +39,12 @@ func TestCheckMigrationSignature(t *testing.T) {
 			name:    "valid signed migration",
 			dir:     "20250101000000_ok",
 			content: migrationpkg.FormatHeader(signed) + "\n" + body,
+			want:    sigOK,
+		},
+		{
+			name:    "valid after body formatting",
+			dir:     "20250101000006_formatted",
+			content: migrationpkg.FormatHeader(signed) + "\ncreate table t (\n  id int primary key\n);\n",
 			want:    sigOK,
 		},
 		{
@@ -86,36 +93,72 @@ func TestCheckMigrationSignature(t *testing.T) {
 }
 
 func TestVerifyAndReportSignatures(t *testing.T) {
-	// Not parallel: toggles the validateRequireSig global.
+	t.Parallel()
 	body := "CREATE TABLE t (id INT PRIMARY KEY);\n"
 
 	fs := afero.NewMemMapFs()
 	require.NoError(t, fs.MkdirAll(flags.MigrationDir, 0755))
-	writeMigrationDir(t, fs, "20250101000000_ok", signedContent(body))
+	writeMigrationDir(t, fs, "20250101000000_ok", signedContent(t, body))
 	writeMigrationDir(t, fs, "20250101000001_nosig", "-- scurry:mode=sync\n"+body)
 
 	migs, err := loadMigrations(fs)
 	require.NoError(t, err)
 
-	old := validateRequireSig
-	defer func() { validateRequireSig = old }()
-
 	// A missing signature is a warning (nil error) by default.
-	validateRequireSig = false
-	assert.NoError(t, verifyAndReportSignatures(fs, migs))
+	assert.NoError(t, verifyAndReportSignatures(fs, migs, false))
 
-	// ...and a hard failure under --require-signatures.
-	validateRequireSig = true
-	assert.Error(t, verifyAndReportSignatures(fs, migs))
+	// ...and a hard failure in require mode.
+	assert.Error(t, verifyAndReportSignatures(fs, migs, true))
 
-	// An invalid signature fails regardless of the flag.
-	validateRequireSig = false
+	// An invalid signature fails in both verification modes.
 	signed := &migrationpkg.Header{Mode: migrationpkg.ModeSync}
-	migrationpkg.SignHeader(signed, body)
+	require.NoError(t, migrationpkg.SignHeader(signed, body))
 	writeMigrationDir(t, fs, "20250101000002_forge", "-- scurry:mode=async,sig="+signed.Sig+"\n"+body)
 	migs, err = loadMigrations(fs)
 	require.NoError(t, err)
-	assert.Error(t, verifyAndReportSignatures(fs, migs))
+	assert.Error(t, verifyAndReportSignatures(fs, migs, false))
+	assert.Error(t, verifyAndReportSignatures(fs, migs, true))
+}
+
+func TestHandleMigrationSignatures(t *testing.T) {
+	t.Parallel()
+	body := "CREATE TABLE t (id INT PRIMARY KEY);\n"
+
+	fs := afero.NewMemMapFs()
+	require.NoError(t, fs.MkdirAll(flags.MigrationDir, 0755))
+	signed := &migrationpkg.Header{Mode: migrationpkg.ModeSync}
+	require.NoError(t, migrationpkg.SignHeader(signed, body))
+	writeMigrationDir(t, fs, "20250101000000_forge", "-- scurry:mode=async,sig="+signed.Sig+"\n"+body)
+
+	migs, err := loadMigrations(fs)
+	require.NoError(t, err)
+
+	stop, err := handleMigrationSignatures(fs, migs, signaturesNoVerify)
+	assert.NoError(t, err)
+	assert.False(t, stop)
+
+	stop, err = handleMigrationSignatures(fs, migs, signaturesVerify)
+	assert.Error(t, err)
+	assert.False(t, stop)
+
+	stop, err = handleMigrationSignatures(fs, migs, signaturesRequire)
+	assert.Error(t, err)
+	assert.False(t, stop)
+
+	stop, err = handleMigrationSignatures(fs, migs, signaturesFix)
+	require.NoError(t, err)
+	assert.True(t, stop)
+	status, err := checkMigrationSignature(fs, migs[0].Name)
+	require.NoError(t, err)
+	assert.Equal(t, sigOK, status)
+}
+
+func TestValidateSignaturesMode(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{signaturesNoVerify, signaturesVerify, signaturesRequire, signaturesFix} {
+		assert.NoError(t, validateSignaturesMode(mode))
+	}
+	assert.EqualError(t, validateSignaturesMode("sometimes"), `invalid --signatures value "sometimes": must be one of no-verify, verify, require, or fix`)
 }
 
 // TestMigrationNewSignsHeader pins the post-form sequence `migration new` runs — classify

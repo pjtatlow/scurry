@@ -41,10 +41,16 @@ type Header struct {
 }
 
 // ComputeSig returns the canonical signature for a header's semantic fields bound to its
-// migration body. It is deterministic: dependencies are sorted, and the sig itself is
-// excluded. Both generation and verification call this, so a matching sig means the
-// header is consistent with the body under scurry's algorithm.
-func ComputeSig(h *Header, body string) string {
+// migration body. It is deterministic: dependencies are sorted, the body is parsed and
+// formatted from its AST, and the sig itself is excluded. Both generation and
+// verification call this, so a matching sig means the header is consistent with the
+// body under scurry's algorithm.
+func ComputeSig(h *Header, body string) (string, error) {
+	canonicalBody, err := canonicalizeBody(body)
+	if err != nil {
+		return "", err
+	}
+
 	deps := append([]string(nil), h.DependsOn...)
 	sort.Strings(deps)
 
@@ -57,16 +63,38 @@ func ComputeSig(h *Header, body string) string {
 		sb.WriteString(";squash=true")
 	}
 	sb.WriteString(";body=")
-	sb.WriteString(body)
+	sb.WriteString(canonicalBody)
 
 	sum := sha256.Sum256([]byte(sb.String()))
-	return hex.EncodeToString(sum[:])[:sigLength]
+	return hex.EncodeToString(sum[:])[:sigLength], nil
 }
 
 // SignHeader sets h.Sig to the canonical signature over the header and the given body.
 // Call this immediately before formatting/writing a migration file.
-func SignHeader(h *Header, body string) {
-	h.Sig = ComputeSig(h, body)
+func SignHeader(h *Header, body string) error {
+	sig, err := ComputeSig(h, body)
+	if err != nil {
+		return err
+	}
+	h.Sig = sig
+	return nil
+}
+
+// canonicalizeBody parses a migration body and serializes each statement from its AST.
+// This makes signatures independent of source formatting while preserving statement
+// order and semantic details such as literals and quoted identifiers.
+func canonicalizeBody(body string) (string, error) {
+	statements, err := parser.Parse(body)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse migration body: %w", err)
+	}
+
+	var sb strings.Builder
+	for _, stmt := range statements {
+		sb.WriteString(stmt.AST.String())
+		sb.WriteString(";\n")
+	}
+	return sb.String(), nil
 }
 
 // ParseHeader parses the first line of a migration SQL string for a scurry header.

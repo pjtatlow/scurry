@@ -351,7 +351,9 @@ func finalizeAuthoredMigration(
 
 	var dirName string
 	if rawBody != "" {
-		migrationpkg.SignHeader(header, rawBody)
+		if err := migrationpkg.SignHeader(header, rawBody); err != nil {
+			return "", nil, fmt.Errorf("failed to sign migration: %w", err)
+		}
 		content := migrationpkg.FormatHeader(header) + "\n" + rawBody
 		dirName, err = writeMigrationFile(fs, name, content)
 	} else {
