@@ -153,7 +153,9 @@ func createMigration(fs afero.Fs, name string, statements []string, header *migr
 	body := strings.Join(statements, ";\n\n") + ";\n"
 	content := body
 	if header != nil {
-		migrationpkg.SignHeader(header, body)
+		if err := migrationpkg.SignHeader(header, body); err != nil {
+			return "", "", fmt.Errorf("failed to sign migration: %w", err)
+		}
 		content = migrationpkg.FormatHeader(header) + "\n" + body
 	}
 

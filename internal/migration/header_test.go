@@ -284,36 +284,77 @@ func TestHeaderSignature(t *testing.T) {
 	t.Run("sign then verify round-trips through format/parse", func(t *testing.T) {
 		t.Parallel()
 		h := &Header{Mode: ModeAsync, DependsOn: []string{"20250101000000_a"}}
-		SignHeader(h, body)
+		require.NoError(t, SignHeader(h, body))
 		require.NotEmpty(t, h.Sig)
 
 		parsed, err := ParseHeader(FormatHeader(h) + "\n" + body)
 		require.NoError(t, err)
 		assert.Equal(t, h.Sig, parsed.Sig)
-		assert.Equal(t, h.Sig, ComputeSig(parsed, body), "recomputed signature matches")
+		sig, err := ComputeSig(parsed, body)
+		require.NoError(t, err)
+		assert.Equal(t, h.Sig, sig, "recomputed signature matches")
 	})
 
 	t.Run("editing the body breaks the signature", func(t *testing.T) {
 		t.Parallel()
 		h := &Header{Mode: ModeSync}
-		SignHeader(h, body)
-		assert.NotEqual(t, h.Sig, ComputeSig(h, body+"ALTER TABLE users ADD COLUMN x INT;\n"))
+		require.NoError(t, SignHeader(h, body))
+		sig, err := ComputeSig(h, body+"ALTER TABLE users ADD COLUMN x INT;\n")
+		require.NoError(t, err)
+		assert.NotEqual(t, h.Sig, sig)
 	})
 
 	t.Run("flipping the mode breaks the signature", func(t *testing.T) {
 		t.Parallel()
 		h := &Header{Mode: ModeSync}
-		SignHeader(h, body)
+		require.NoError(t, SignHeader(h, body))
 		// An agent flips mode to async but keeps the old signature.
 		forged := &Header{Mode: ModeAsync, Sig: h.Sig}
-		assert.NotEqual(t, forged.Sig, ComputeSig(forged, body))
+		sig, err := ComputeSig(forged, body)
+		require.NoError(t, err)
+		assert.NotEqual(t, forged.Sig, sig)
 	})
 
 	t.Run("signature is independent of dependency order", func(t *testing.T) {
 		t.Parallel()
 		a := &Header{Mode: ModeSync, DependsOn: []string{"x", "y"}}
 		b := &Header{Mode: ModeSync, DependsOn: []string{"y", "x"}}
-		assert.Equal(t, ComputeSig(a, body), ComputeSig(b, body))
+		aSig, err := ComputeSig(a, body)
+		require.NoError(t, err)
+		bSig, err := ComputeSig(b, body)
+		require.NoError(t, err)
+		assert.Equal(t, aSig, bSig)
+	})
+
+	t.Run("signature is independent of SQL formatting", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeSync}
+		unformatted := "create table users(id int primary key);\r\n"
+		formatted := "CREATE TABLE users (\n  id INT PRIMARY KEY\n);\n"
+
+		unformattedSig, err := ComputeSig(h, unformatted)
+		require.NoError(t, err)
+		formattedSig, err := ComputeSig(h, formatted)
+		require.NoError(t, err)
+		assert.Equal(t, unformattedSig, formattedSig)
+	})
+
+	t.Run("semantic differences still change the signature", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeSync}
+		aSig, err := ComputeSig(h, "INSERT INTO messages VALUES ('hello world');")
+		require.NoError(t, err)
+		bSig, err := ComputeSig(h, "INSERT INTO messages VALUES ('helloworld');")
+		require.NoError(t, err)
+		assert.NotEqual(t, aSig, bSig)
+	})
+
+	t.Run("invalid SQL cannot be signed", func(t *testing.T) {
+		t.Parallel()
+		h := &Header{Mode: ModeSync}
+		err := SignHeader(h, "CREATE TABLE")
+		require.Error(t, err)
+		assert.Empty(t, h.Sig)
 	})
 }
 
