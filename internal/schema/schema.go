@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
@@ -188,6 +189,18 @@ func LoadFromDatabase(ctx context.Context, dbClient *db.Client) (*Schema, error)
 			return nil, err
 		}
 		allStatements = append(allStatements, stmt...)
+	}
+
+	// CockroachDB 26.1+ adds the schema_locked storage parameter to every
+	// table automatically. Strip it so it never leaks into anything derived
+	// from a database-loaded schema (squash migrations, checkpoints,
+	// generated DDL).
+	for _, stmt := range allStatements {
+		if create, ok := stmt.(*tree.CreateTable); ok {
+			create.StorageParams = slices.DeleteFunc(create.StorageParams, func(p tree.StorageParam) bool {
+				return p.Key == "schema_locked"
+			})
+		}
 	}
 
 	schema := NewSchema(allStatements...)

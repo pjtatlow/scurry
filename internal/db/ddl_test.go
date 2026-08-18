@@ -66,7 +66,9 @@ func TestChunkStatementsByTransaction(t *testing.T) {
 }
 
 // getProdLikeClient creates a "production-like" connection to the test server
-// WITHOUT disabling schema_locked (simulating a real DB connection).
+// (simulating a real DB connection). Note that the shared test server disables
+// the v26+ schema_locked default cluster-wide, so tests that need locked
+// tables must create them with an explicit WITH (schema_locked = true).
 func getProdLikeClient(t *testing.T, ctx context.Context) *Client {
 	t.Helper()
 
@@ -101,6 +103,30 @@ func getProdLikeClient(t *testing.T, ctx context.Context) *Client {
 	return client
 }
 
+// TestShadowDBCreatesUnlockedTables verifies that tables created through a
+// shadow DB client are never schema_locked. The v26+ default is disabled
+// cluster-wide on the shared test server, so it holds for every pooled
+// connection, not just the one that would have run a session-level SET.
+func TestShadowDBCreatesUnlockedTables(t *testing.T) {
+	ctx := context.Background()
+	client, err := GetShadowDB(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { client.Close() })
+
+	tables := []string{"unlocked_a", "unlocked_b", "unlocked_c"}
+	for _, name := range tables {
+		_, err := client.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s (id INT PRIMARY KEY)", name))
+		require.NoError(t, err)
+	}
+
+	for _, name := range tables {
+		var createStmt string
+		err := client.db.QueryRowContext(ctx, "SHOW CREATE TABLE "+name).Scan(new(string), &createStmt)
+		require.NoError(t, err)
+		assert.NotContains(t, createStmt, "schema_locked", "shadow DB tables must not be schema_locked")
+	}
+}
+
 // TestExecuteBulkDDLWithSchemaLocked verifies that ExecuteBulkDDL can modify
 // tables that have schema_locked = true (the CockroachDB v26+ default).
 // This simulates the production scenario where scurry connects to a real database
@@ -109,15 +135,15 @@ func TestExecuteBulkDDLWithSchemaLocked(t *testing.T) {
 	ctx := context.Background()
 	client := getProdLikeClient(t, ctx)
 
-	// Create a table (which gets schema_locked = true on CRDB v26+)
-	_, err := client.db.ExecContext(ctx, "CREATE TABLE test_locked (id INT PRIMARY KEY, name TEXT)")
+	// Create a table with schema_locked = true (the production default on CRDB v26+)
+	_, err := client.db.ExecContext(ctx, "CREATE TABLE test_locked (id INT PRIMARY KEY, name TEXT) WITH (schema_locked = true)")
 	require.NoError(t, err)
 
 	// Verify the table was created with schema_locked
 	var createStmt string
 	err = client.db.QueryRowContext(ctx, "SHOW CREATE TABLE test_locked").Scan(new(string), &createStmt)
 	require.NoError(t, err)
-	require.Contains(t, createStmt, "schema_locked = true", "table should have schema_locked on CRDB v26+")
+	require.Contains(t, createStmt, "schema_locked = true", "table should have schema_locked")
 
 	// Now try to ALTER the table via ExecuteBulkDDL (the production path)
 	err = client.ExecuteBulkDDL(ctx,
@@ -172,7 +198,7 @@ func TestAutocommitMultipleDDLInOneChunk(t *testing.T) {
 	client := getProdLikeClient(t, ctx)
 
 	// First create a table with schema_locked
-	_, err := client.db.ExecContext(ctx, "CREATE TABLE multi_ddl (id INT PRIMARY KEY, name TEXT)")
+	_, err := client.db.ExecContext(ctx, "CREATE TABLE multi_ddl (id INT PRIMARY KEY, name TEXT) WITH (schema_locked = true)")
 	require.NoError(t, err)
 
 	// Now send multiple DDL statements as a single chunk (no COMMIT/BEGIN boundaries)
@@ -215,8 +241,8 @@ func TestExecuteMigrationWithSchemaLocked(t *testing.T) {
 
 	// Set up initial production state: tables with schema_locked = true
 	_, err = client.db.ExecContext(ctx, `
-		CREATE TABLE users (id INT PRIMARY KEY, name TEXT);
-		CREATE TABLE posts (id INT PRIMARY KEY, user_id INT, title TEXT);
+		CREATE TABLE users (id INT PRIMARY KEY, name TEXT) WITH (schema_locked = true);
+		CREATE TABLE posts (id INT PRIMARY KEY, user_id INT, title TEXT) WITH (schema_locked = true);
 	`)
 	require.NoError(t, err)
 

@@ -262,6 +262,70 @@ func TestLoadFromDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadFromDatabaseStripsSchemaLocked(t *testing.T) {
+	ctx := context.Background()
+
+	// Skip on CRDB versions without the schema_locked storage parameter
+	probe, err := db.GetShadowDB(ctx)
+	require.NoError(t, err)
+	var v string
+	supported := probe.GetDB().QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&v) == nil
+	probe.Close()
+	if !supported {
+		t.Skip("CRDB version does not support schema_locked")
+	}
+
+	tests := []struct {
+		name     string
+		ddl      string
+		table    string
+		wantKept []string // storage param keys that must survive the strip
+	}{
+		{
+			name:  "explicit schema_locked is stripped",
+			ddl:   "CREATE TABLE locked_tbl (id INT8 PRIMARY KEY) WITH (schema_locked = true)",
+			table: "locked_tbl",
+		},
+		{
+			name:     "other storage params survive the strip",
+			ddl:      "CREATE TABLE locked_ttl (id INT8 PRIMARY KEY) WITH (schema_locked = true, ttl_expire_after = '30 days')",
+			table:    "locked_ttl",
+			wantKept: []string{"ttl_expire_after"},
+		},
+		{
+			name:  "table without storage params is unaffected",
+			ddl:   "CREATE TABLE plain_tbl (id INT8 PRIMARY KEY)",
+			table: "plain_tbl",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbClient, err := db.GetShadowDB(ctx, tt.ddl)
+			require.NoError(t, err)
+			defer dbClient.Close()
+
+			schema, err := LoadFromDatabase(ctx, dbClient)
+			require.NoError(t, err)
+			require.Len(t, schema.Tables, 1)
+			assert.Equal(t, tt.table, schema.Tables[0].Name)
+
+			keys := make([]string, 0, len(schema.Tables[0].Ast.StorageParams))
+			for _, p := range schema.Tables[0].Ast.StorageParams {
+				keys = append(keys, string(p.Key))
+			}
+			assert.NotContains(t, keys, "schema_locked")
+			for _, want := range tt.wantKept {
+				assert.Contains(t, keys, want)
+			}
+
+			for _, stmt := range schema.OriginalStatements {
+				assert.NotContains(t, stmt, "schema_locked")
+			}
+		})
+	}
+}
+
 func TestParseSQL(t *testing.T) {
 	tests := []struct {
 		name        string
