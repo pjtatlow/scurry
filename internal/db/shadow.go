@@ -3,11 +3,13 @@ package db
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/util/uuid"
@@ -118,6 +120,8 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 		}
 		sharedDbServer = ts
 		shadowServerURL = ts.PGURL()
+
+		configureShadowServer(ctx, shadowServerURL.String())
 	}
 
 	// Choose a random database name
@@ -134,15 +138,44 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 	client.isShadow = true
 	client.disableAutocommitDDL = true
 
-	// Shadow databases are ephemeral and don't benefit from schema_locked.
-	// Disable it so tables can be freely modified without unlock overhead.
-	_, _ = client.db.ExecContext(ctx, "SET create_table_with_schema_locked = false")
+	return client, nil
+}
+
+// configureShadowServer applies cluster-wide settings to the shared shadow
+// server right after it starts, before any shadow database client connects.
+// A session-level SET is not reliable for this: Client wraps a connection
+// pool, so a SET only applies to whichever pooled connection happens to run
+// it, while later DDL can run on other connections that still have the
+// defaults. Cluster settings apply to every session opened afterwards.
+// Errors are ignored because older CockroachDB versions don't have these
+// settings (and don't need them).
+func configureShadowServer(ctx context.Context, serverURL string) {
+	conn, err := sql.Open("postgres", serverURL)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// CockroachDB 26.1+ creates all tables with schema_locked by default.
+	// Shadow databases are ephemeral and don't benefit from it, and the
+	// parameter must not leak into schemas read back from the shadow DB
+	// (squash migrations, checkpoints, generated DDL).
+	_, _ = conn.ExecContext(ctx, "SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked = false")
 
 	// Newer CockroachDB versions restrict access to crdb_internal by default.
 	// We need it for InitMigrationHistory's schema introspection.
-	_, _ = client.db.ExecContext(ctx, "SET allow_unsafe_internals = true")
+	_, _ = conn.ExecContext(ctx, "SET CLUSTER SETTING sql.override.allow_unsafe_internals.enabled = true")
 
-	return client, nil
+	// Cluster settings propagate asynchronously; wait briefly so sessions
+	// opened after this pick up the new schema_locked default.
+	for range 100 {
+		var enabled bool
+		err := conn.QueryRowContext(ctx, "SHOW CLUSTER SETTING sql.defaults.create_table_with_schema_locked").Scan(&enabled)
+		if err != nil || !enabled {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func StopShadowDbServer() {

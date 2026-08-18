@@ -177,6 +177,48 @@ func TestDoMigrationSquash(t *testing.T) {
 		assert.True(t, exists, "recent migration should not be affected")
 	})
 
+	t.Run("schema_locked storage param is stripped from squash output", func(t *testing.T) {
+		ctx := context.Background()
+		fs := afero.NewOsFs()
+
+		tmpDir := t.TempDir()
+		oldMigrationDir := flags.MigrationDir
+		flags.MigrationDir = tmpDir
+		defer func() { flags.MigrationDir = oldMigrationDir }()
+
+		// Skip on CRDB versions without the schema_locked storage parameter
+		probe, err := db.GetShadowDB(ctx)
+		require.NoError(t, err)
+		var v string
+		supported := probe.GetDB().QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&v) == nil
+		probe.Close()
+		if !supported {
+			t.Skip("CRDB version does not support schema_locked")
+		}
+
+		// Simulates migrations written before schema_locked was stripped
+		// (e.g. an old squash file that captured the parameter)
+		createMigrationDir(t, fs, "20240101000000_create_users", "CREATE TABLE users (id INT8 PRIMARY KEY, name STRING NOT NULL) WITH (schema_locked = true);")
+		createMigrationDir(t, fs, "20240201000000_add_email", "ALTER TABLE users ADD COLUMN email STRING;")
+
+		recentTimestamp := time.Now().Add(-1 * time.Hour).Format("20060102150405")
+		createMigrationDir(t, fs, recentTimestamp+"_add_posts", "CREATE TABLE posts (id INT8 PRIMARY KEY);")
+
+		flags.Force = true
+		defer func() { flags.Force = false }()
+
+		err = doMigrationSquash(ctx, fs, 720*time.Hour)
+		require.NoError(t, err)
+
+		content, err := afero.ReadFile(fs, filepath.Join(flags.MigrationDir, "20240201000000_squash", "migration.sql"))
+		require.NoError(t, err)
+		contentStr := string(content)
+
+		assert.Contains(t, contentStr, "CREATE TABLE")
+		assert.Contains(t, contentStr, "email")
+		assert.NotContains(t, contentStr, "schema_locked", "squash output must not contain schema_locked")
+	})
+
 	t.Run("error when fewer than 2 migrations before cutoff", func(t *testing.T) {
 		ctx := context.Background()
 		fs := afero.NewOsFs()
@@ -257,6 +299,58 @@ func TestDoMigrationSquash(t *testing.T) {
 		// Second should be the recent one, not squash
 		assert.False(t, migrations[1].Squash, "recent migration should have Squash=false")
 	})
+}
+
+// TestValidateOverwriteStripsSchemaLockedFromSquash reproduces the case where
+// an existing squash migration captured WITH (schema_locked = true) before
+// stripping existed: validate --overwrite must not leak the parameter into
+// schema.sql.
+func TestValidateOverwriteStripsSchemaLockedFromSquash(t *testing.T) {
+	ctx := context.Background()
+	fs := afero.NewOsFs()
+
+	tmpDir := t.TempDir()
+	oldMigrationDir := flags.MigrationDir
+	flags.MigrationDir = tmpDir
+	defer func() { flags.MigrationDir = oldMigrationDir }()
+
+	oldOverwrite, oldSignatures, oldNoCheckpoint := validateOverwrite, validateSignatures, validateNoCheckpoint
+	validateOverwrite = true
+	validateSignatures = signaturesNoVerify
+	validateNoCheckpoint = true
+	defer func() {
+		validateOverwrite, validateSignatures, validateNoCheckpoint = oldOverwrite, oldSignatures, oldNoCheckpoint
+	}()
+
+	// Skip on CRDB versions without the schema_locked storage parameter
+	probe, err := db.GetShadowDB(ctx)
+	require.NoError(t, err)
+	var v string
+	supported := probe.GetDB().QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&v) == nil
+	probe.Close()
+	if !supported {
+		t.Skip("CRDB version does not support schema_locked")
+	}
+
+	header := migrationpkg.FormatHeader(&migrationpkg.Header{Mode: migrationpkg.ModeSync, Squash: true})
+	squashDir := filepath.Join(flags.MigrationDir, "20240101000000_squash")
+	require.NoError(t, fs.MkdirAll(squashDir, 0755))
+	squashSQL := header + "\nCREATE TABLE users (id INT8 PRIMARY KEY, name STRING NOT NULL) WITH (schema_locked = true);\n"
+	require.NoError(t, afero.WriteFile(fs, filepath.Join(squashDir, "migration.sql"), []byte(squashSQL), 0644))
+
+	migrationDir := filepath.Join(flags.MigrationDir, "20240201000000_add_email")
+	require.NoError(t, fs.MkdirAll(migrationDir, 0755))
+	require.NoError(t, afero.WriteFile(fs, filepath.Join(migrationDir, "migration.sql"), []byte("ALTER TABLE users ADD COLUMN email STRING;\n"), 0644))
+
+	require.NoError(t, doMigrationValidate(ctx))
+
+	content, err := afero.ReadFile(fs, filepath.Join(flags.MigrationDir, "schema.sql"))
+	require.NoError(t, err)
+	contentStr := string(content)
+
+	assert.Contains(t, contentStr, "CREATE TABLE")
+	assert.Contains(t, contentStr, "email")
+	assert.NotContains(t, contentStr, "schema_locked", "schema.sql must not contain schema_locked")
 }
 
 func TestSquashMigrationHeaderRoundTrip(t *testing.T) {
