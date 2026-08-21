@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
@@ -23,8 +25,17 @@ The database will stay running until the process is killed (Ctrl+C).`,
 	RunE: runTestserver,
 }
 
+// The store fraction reaches CockroachDB rounded to two decimal places, and
+// CockroachDB rejects 0% and 100%, so those are the fractions worth accepting.
+const (
+	minStoreSize = 0.01
+	maxStoreSize = 0.99
+)
+
 var (
-	urlFile string
+	urlFile     string
+	cacheSize   string
+	maxGoMemory string
 )
 
 func init() {
@@ -36,6 +47,46 @@ func init() {
 	testserverCmd.Flags().StringVar(&db.TestServerHost, "host", "", "Host address for the test database server")
 	testserverCmd.Flags().IntVar(&db.TestServerPort, "port", 0, "Port for the test database server")
 	testserverCmd.Flags().IntVar(&db.TestServerHTTPPort, "http-port", 0, "HTTP port for the test database server")
+	testserverCmd.Flags().Float64Var(&db.TestServerStoreSize, "store-size", 0, "Fraction of available memory for the in-memory store, e.g. 0.05 (CockroachDB --store=type=mem,size, defaults to 0.2)")
+	testserverCmd.Flags().StringVar(&cacheSize, "cache-size", "", "Size of the block cache, e.g. 512MiB (CockroachDB --cache, defaults to 10% of available memory)")
+	testserverCmd.Flags().StringVar(&maxGoMemory, "max-go-memory", "", "Soft limit on the CockroachDB Go heap, e.g. 2GiB (sets GOMEMLIMIT, defaults to 2.25x CockroachDB's --max-sql-memory)")
+}
+
+// applyMemoryLimits validates the optional memory limit flags and hands the
+// parsed values to the db package. Flags that were not set are left alone, so
+// CockroachDB's defaults apply.
+func applyMemoryLimits() error {
+	if db.TestServerStoreSize != 0 && (db.TestServerStoreSize < minStoreSize || db.TestServerStoreSize > maxStoreSize) {
+		return fmt.Errorf("invalid --store-size %v: expected a fraction of available memory between %v and %v (e.g. 0.05)", db.TestServerStoreSize, minStoreSize, maxStoreSize)
+	}
+
+	if cacheSize != "" {
+		size, err := parseMemorySize("cache-size", cacheSize)
+		if err != nil {
+			return err
+		}
+		db.TestServerCacheSize = size
+	}
+
+	if maxGoMemory != "" {
+		size, err := parseMemorySize("max-go-memory", maxGoMemory)
+		if err != nil {
+			return err
+		}
+		db.TestServerMaxGoMemory = size
+	}
+
+	return nil
+}
+
+// parseMemorySize parses a byte size the way CockroachDB does, e.g. 512MiB,
+// 2GB or a plain byte count.
+func parseMemorySize(name, value string) (int64, error) {
+	size, err := humanize.ParseBytes(value)
+	if err != nil || size == 0 || size > math.MaxInt64 {
+		return 0, fmt.Errorf("invalid --%s %q: expected a byte size such as 512MiB or 2GiB", name, value)
+	}
+	return int64(size), nil
 }
 
 func runTestserver(cmd *cobra.Command, args []string) error {
@@ -47,6 +98,9 @@ func runTestserver(cmd *cobra.Command, args []string) error {
 	}
 	if urlFile == "" {
 		return fmt.Errorf("url file is required (use --url-file)")
+	}
+	if err := applyMemoryLimits(); err != nil {
+		return err
 	}
 
 	err := doTestserver(ctx, urlFile)
