@@ -41,6 +41,7 @@ go_library(
         "@com_github_charmbracelet_huh//:huh",
         "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/parser",
         "@com_github_cockroachdb_cockroachdb_parser//pkg/sql/sem/tree",
+        "@com_github_dustin_go_humanize//:go-humanize",
         "@com_github_spf13_afero//:afero",
         "@com_github_spf13_cobra//:cobra",
         "@in_gopkg_yaml_v3//:yaml_v3",
@@ -60,6 +61,7 @@ go_test(
         "migration_squash_test.go",
         "migration_test.go",
         "push_test.go",
+        "testserver_test.go",
     ],
     embed = [":cmd"],
     deps = [
