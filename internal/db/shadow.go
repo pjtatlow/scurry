@@ -28,6 +28,12 @@ var (
 	TestServerPort     int
 	TestServerHTTPPort int
 
+	// Optional limits on how much memory the CockroachDB process may use.
+	// The zero value of each means "leave CockroachDB's default alone".
+	TestServerStoreSize   float64 // fraction of available memory
+	TestServerCacheSize   int64   // bytes
+	TestServerMaxGoMemory int64   // bytes
+
 	logOutput bytes.Buffer
 )
 
@@ -89,6 +95,26 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 			opts = append(opts, testserver.AddHttpPortOpt(TestServerHTTPPort))
 		}
 
+		// Size the in-memory store if specified. cockroach-go turns this into
+		// --store=type=mem,size=<fraction>, which CockroachDB resolves against
+		// the memory available to the process (the cgroup limit in a container).
+		if TestServerStoreSize > 0 {
+			opts = append(opts, testserver.SetStoreMemSizeOpt(TestServerStoreSize))
+		}
+
+		// Size the Pebble block cache if specified. cockroach-go describes this
+		// as a fraction, but it only formats the value into --cache, and
+		// CockroachDB reads a --cache value of 1 or more as a byte count. The
+		// block cache is allocated outside the Go heap, so a Go memory limit
+		// does not bound it.
+		if TestServerCacheSize > 0 {
+			opts = append(opts, testserver.CacheSizeOpt(float64(TestServerCacheSize)))
+		}
+
+		// Environment for the cockroach process. cockroach-go appends these
+		// last, so later entries win: an explicit limit overrides COCKROACH_ENV.
+		envVars := make([]string, 0)
+
 		// Parse COCKROACH_ENV variable if set
 		if cockroachEnv := os.Getenv("COCKROACH_ENV"); cockroachEnv != "" {
 			// Parse as query parameters
@@ -98,16 +124,23 @@ func getShadowDbClient(ctx context.Context) (*Client, error) {
 			}
 
 			// Convert to slice of "key=value" strings
-			envVars := make([]string, 0)
 			for key, vals := range values {
 				for _, val := range vals {
 					envVars = append(envVars, fmt.Sprintf("%s=%s", key, val))
 				}
 			}
+		}
 
-			if len(envVars) > 0 {
-				opts = append(opts, testserver.EnvVarOpt(envVars))
-			}
+		// Bound the Go heap if specified. CockroachDB otherwise sets its own
+		// soft limit of 2.25x --max-sql-memory, and cockroach-go exposes no
+		// option for either --max-go-memory or --max-sql-memory. CockroachDB
+		// skips that calculation when GOMEMLIMIT is set in the environment.
+		if TestServerMaxGoMemory > 0 {
+			envVars = append(envVars, fmt.Sprintf("GOMEMLIMIT=%d", TestServerMaxGoMemory))
+		}
+
+		if len(envVars) > 0 {
+			opts = append(opts, testserver.EnvVarOpt(envVars))
 		}
 
 		if cockroachLogsDir := os.Getenv("COCKROACH_LOGS_DIR"); cockroachLogsDir != "" {
