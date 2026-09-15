@@ -88,8 +88,8 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	errCtx.LocalSchema = localSchema
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
-			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers locally",
+			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views), len(localSchema.Triggers))))
 	}
 
 	// 2. Load production schema from schema.sql
@@ -104,8 +104,8 @@ func doMigrationGen(ctx context.Context, errCtx *ErrorContext) error {
 	errCtx.RemoteSchema = prodSchema
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in production",
-			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers in production",
+			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views), len(prodSchema.Triggers))))
 	}
 
 	// 3. Compare schemas

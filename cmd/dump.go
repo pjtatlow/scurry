@@ -95,8 +95,8 @@ func doDump(ctx context.Context, outputFile string) error {
 	}
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in database",
-			len(dbSchema.Tables), len(dbSchema.Types), len(dbSchema.Routines), len(dbSchema.Sequences), len(dbSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers in database",
+			len(dbSchema.Tables), len(dbSchema.Types), len(dbSchema.Routines), len(dbSchema.Sequences), len(dbSchema.Views), len(dbSchema.Triggers))))
 	}
 
 	// Generate CREATE statements

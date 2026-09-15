@@ -64,8 +64,8 @@ func doMigrationNew(ctx context.Context) error {
 	}
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in production",
-			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers in production",
+			len(prodSchema.Tables), len(prodSchema.Types), len(prodSchema.Routines), len(prodSchema.Sequences), len(prodSchema.Views), len(prodSchema.Triggers))))
 		fmt.Println()
 	}
 

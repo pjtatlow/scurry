@@ -85,6 +85,8 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 				names.Add(typeName)
 			}
 		}
+	case *tree.CreateTrigger:
+		names.Add("trigger:" + getTriggerKey(s))
 
 	case *tree.AlterTable:
 		{
@@ -176,6 +178,7 @@ func GetProvidedNames(stmt tree.Statement, strict bool) set.Set[string] {
 	case *tree.DropType:
 	case *tree.DropView:
 	case *tree.DropIndex:
+	case *tree.DropTrigger:
 	case *tree.BeginTransaction:
 	case *tree.CommitTransaction:
 	case *tree.DropSchema:

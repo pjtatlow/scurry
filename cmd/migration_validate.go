@@ -115,8 +115,8 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Result: %d tables, %d types, %d routines, %d sequences, %d views",
-			len(resultSchema.Tables), len(resultSchema.Types), len(resultSchema.Routines), len(resultSchema.Sequences), len(resultSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Result: %d tables, %d types, %d routines, %d sequences, %d views, %d triggers",
+			len(resultSchema.Tables), len(resultSchema.Types), len(resultSchema.Routines), len(resultSchema.Sequences), len(resultSchema.Views), len(resultSchema.Triggers))))
 	}
 
 	// 3. Handle overwrite flag
@@ -154,8 +154,8 @@ func doMigrationValidate(ctx context.Context) error {
 	}
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Expected: %d tables, %d types, %d routines, %d sequences, %d views",
-			len(expectedSchema.Tables), len(expectedSchema.Types), len(expectedSchema.Routines), len(expectedSchema.Sequences), len(expectedSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Expected: %d tables, %d types, %d routines, %d sequences, %d views, %d triggers",
+			len(expectedSchema.Tables), len(expectedSchema.Types), len(expectedSchema.Routines), len(expectedSchema.Sequences), len(expectedSchema.Views), len(expectedSchema.Triggers))))
 	}
 
 	// 5. Compare schemas

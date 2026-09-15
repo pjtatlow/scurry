@@ -19,6 +19,10 @@ const (
 	DiffTypeRoutineRemoved  DiffType = "routine_removed"
 	DiffTypeRoutineModified DiffType = "routine_modified"
 
+	DiffTypeTriggerAdded    DiffType = "trigger_added"
+	DiffTypeTriggerRemoved  DiffType = "trigger_removed"
+	DiffTypeTriggerModified DiffType = "trigger_modified"
+
 	DiffTypeTypeAdded    DiffType = "type_added"
 	DiffTypeTypeRemoved  DiffType = "type_removed"
 	DiffTypeTypeModified DiffType = "type_modified"
@@ -73,6 +77,7 @@ func Compare(local, remote *Schema) *ComparisonResult {
 	result.Differences = append(result.Differences, compareRoutines(local, remote)...)
 	result.Differences = append(result.Differences, compareTables(local, remote)...)
 	result.Differences = append(result.Differences, compareViews(local, remote)...)
+	result.Differences = append(result.Differences, compareTriggers(local, remote)...)
 
 	return &result
 }

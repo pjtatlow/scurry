@@ -122,6 +122,9 @@ func (r *ComparisonResult) GenerateMigrations(pretty bool) ([]string, []string, 
 					schemaName, routineName := getRoutineName(routine.FuncName)
 					dropStatements.add(schemaName+"."+routineName, stmt)
 				}
+			case *tree.DropTrigger:
+				schemaName, tableName := getObjectName(d.Table)
+				dropStatements.add("trigger:"+schemaName+"."+tableName+"."+d.Trigger.Normalize(), stmt)
 			case *tree.AlterTable:
 				// ALTER TABLE ... DROP COLUMN registers the qualified column name so
 				// that a separate DROP INDEX diff with OriginalDependencies pointing

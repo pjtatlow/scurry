@@ -541,7 +541,7 @@ func catchUpMigrations(ctx context.Context, fs afero.Fs, dbClient *db.Client, fo
 // (tables, types, routines, sequences, or views). The bare public schema is ignored, so
 // a freshly created, empty database reports false.
 func schemaHasObjects(s *schema.Schema) bool {
-	return len(s.Tables)+len(s.Types)+len(s.Routines)+len(s.Sequences)+len(s.Views) > 0
+	return len(s.Tables)+len(s.Types)+len(s.Routines)+len(s.Sequences)+len(s.Views)+len(s.Triggers) > 0
 }
 
 // recoverBeforeLocal runs the interactive recovery flow for a failed/pending migration

@@ -179,8 +179,8 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	errCtx.LocalSchema = localSchema
 
 	if opts.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
-			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers locally",
+			len(localSchema.Tables), len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views), len(localSchema.Triggers))))
 	}
 
 	// Load remote schema from database (all schemas)
@@ -195,8 +195,8 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	errCtx.RemoteSchema = remoteSchema
 
 	if opts.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views in database",
-			len(remoteSchema.Tables), len(remoteSchema.Types), len(remoteSchema.Routines), len(remoteSchema.Sequences), len(remoteSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers in database",
+			len(remoteSchema.Tables), len(remoteSchema.Types), len(remoteSchema.Routines), len(remoteSchema.Sequences), len(remoteSchema.Views), len(remoteSchema.Triggers))))
 	}
 
 	// Compare schemas

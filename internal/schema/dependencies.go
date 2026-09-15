@@ -28,6 +28,8 @@ func GetDependencyNames(stmt tree.Statement, strict bool) set.Set[string] {
 		return getAlterTableDependencies(stmt, strict)
 	case *tree.CreateIndex:
 		return getIndexDependencies(stmt.Table, stmt.Columns, stmt.Storing, stmt.Predicate)
+	case *tree.CreateTrigger:
+		return getCreateTriggerDependencies(stmt)
 
 	// Drop statements have no dependencies, if we made one, then the objects already exist
 	// Can't think of a situation where we would create an object, then need to drop it in the same schema change...
@@ -37,6 +39,7 @@ func GetDependencyNames(stmt tree.Statement, strict bool) set.Set[string] {
 	case *tree.DropType:
 	case *tree.DropView:
 	case *tree.DropIndex:
+	case *tree.DropTrigger:
 	case *tree.BeginTransaction:
 	case *tree.CommitTransaction:
 
