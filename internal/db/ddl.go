@@ -116,6 +116,11 @@ func queryAndScanCreateStatements(
 	return results, rows.Err()
 }
 
+// maxDDLChunkSize bounds statements per transaction. Measured on a
+// ~2,150-statement schema, 350-500 loads fastest: smaller chunks pay more
+// schema-change job waits at commit, larger ones make each statement slower.
+const maxDDLChunkSize = 400
+
 // ExecuteBulkDDL executes multiple DDL statements, respecting COMMIT/BEGIN
 // transaction boundaries. Statements are grouped into chunks that are executed
 // within transactions. COMMIT/BEGIN pairs in the input signal transaction
@@ -127,9 +132,9 @@ func queryAndScanCreateStatements(
 // ALTER COLUMN TYPE requiring on-disk rewrite in CockroachDB). These chunks
 // are preceded by a nil marker from chunkStatementsByTransaction.
 //
-// If a chunk exceeds 50 statements, it is further split into sub-chunks.
+// If a chunk exceeds maxDDLChunkSize statements, it is further split into sub-chunks.
 func (c *Client) ExecuteBulkDDL(ctx context.Context, statements ...string) error {
-	chunks := chunkStatementsByTransaction(statements, 50)
+	chunks := chunkStatementsByTransaction(statements, maxDDLChunkSize)
 
 	for i := 0; i < len(chunks); i++ {
 		chunk := chunks[i]
