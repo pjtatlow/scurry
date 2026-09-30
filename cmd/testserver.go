@@ -135,8 +135,8 @@ func doTestserver(ctx context.Context, urlFile string) error {
 		return fmt.Errorf("failed to load local schema: %w", err)
 	}
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views locally",
-			len(testSchema.Tables), len(testSchema.Types), len(testSchema.Routines), len(testSchema.Sequences), len(testSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables, %d types, %d routines, %d sequences, %d views, %d triggers locally",
+			len(testSchema.Tables), len(testSchema.Types), len(testSchema.Routines), len(testSchema.Sequences), len(testSchema.Views), len(testSchema.Triggers))))
 	}
 
 	// Write URL to file

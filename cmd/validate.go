@@ -73,8 +73,8 @@ func doValidate(ctx context.Context) error {
 	}
 
 	if flags.Verbose {
-		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables with %d columns, %d types, %d routines, %d sequences, %d views locally",
-			len(localSchema.Tables), numColumns, len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views))))
+		fmt.Println(ui.Subtle(fmt.Sprintf("  Found %d tables with %d columns, %d types, %d routines, %d sequences, %d views, %d triggers locally",
+			len(localSchema.Tables), numColumns, len(localSchema.Types), len(localSchema.Routines), len(localSchema.Sequences), len(localSchema.Views), len(localSchema.Triggers))))
 	}
 
 	fmt.Println()

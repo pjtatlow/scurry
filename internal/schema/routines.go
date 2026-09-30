@@ -66,11 +66,28 @@ func compareRoutines(local, remote *Schema) []Difference {
 				// CockroachDB supports this for functions/procedures
 				ast := *localRoutine.Ast
 				ast.Replace = true
+
+				routineName := getQualifiedRoutineName(localRoutine.Ast.Name)
+				stmts := make([]tree.Statement, 0)
+				description := fmt.Sprintf("Routine '%s' modified", name)
+				localTriggers := triggersUsingRoutine(local, routineName)
+				remoteTriggers := triggersToDropBeforeReplacing(remote, routineName, localTriggers)
+				for _, trigger := range remoteTriggers {
+					stmts = append(stmts, dropTriggerStatement(trigger.Ast))
+				}
+				stmts = append(stmts, &ast)
+				for _, trigger := range localTriggers {
+					stmts = append(stmts, trigger.Ast)
+				}
+				if len(remoteTriggers) > 0 || len(localTriggers) > 0 {
+					description = fmt.Sprintf("Routine '%s' modified, dependent triggers re-created", name)
+					stmts = outsideTransaction(stmts...)
+				}
 				diffs = append(diffs, Difference{
 					Type:                DiffTypeRoutineModified,
 					ObjectName:          name,
-					Description:         fmt.Sprintf("Routine '%s' modified", name),
-					MigrationStatements: []tree.Statement{&ast},
+					Description:         description,
+					MigrationStatements: stmts,
 				})
 			}
 		}
