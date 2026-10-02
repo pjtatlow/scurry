@@ -46,7 +46,7 @@ type Header struct {
 // verification call this, so a matching sig means the header is consistent with the
 // body under scurry's algorithm.
 func ComputeSig(h *Header, body string) (string, error) {
-	canonicalBody, err := canonicalizeBody(body)
+	canonicalBody, err := CanonicalizeBody(body)
 	if err != nil {
 		return "", err
 	}
@@ -80,10 +80,10 @@ func SignHeader(h *Header, body string) error {
 	return nil
 }
 
-// canonicalizeBody parses a migration body and serializes each statement from its AST.
+// CanonicalizeBody parses a migration body and serializes each statement from its AST.
 // This makes signatures independent of source formatting while preserving statement
 // order and semantic details such as literals and quoted identifiers.
-func canonicalizeBody(body string) (string, error) {
+func CanonicalizeBody(body string) (string, error) {
 	statements, err := parser.Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse migration body: %w", err)

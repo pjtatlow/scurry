@@ -460,6 +460,7 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []db.Migration, re
 
 	lastMigration := migrations[len(migrations)-1]
 	migrationDir := filepath.Join(flags.MigrationDir, lastMigration.Name)
+	migrationsHash := computeMigrationsHash(migrations)
 
 	// Check if checkpoint already exists
 	checkpoint, err := loadCheckpoint(fs, migrationDir)
@@ -470,8 +471,7 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []db.Migration, re
 		}
 	} else if checkpoint != nil {
 		// Checkpoint exists, validate it
-		expectedHash := computeMigrationsHash(migrations)
-		if checkpoint.Header.MigrationsHash == expectedHash {
+		if checkpoint.Header.MigrationsHash == migrationsHash {
 			if err := validateCheckpoint(checkpoint); err == nil {
 				// Checkpoint is valid, nothing to do
 				return nil
@@ -489,7 +489,7 @@ func ensureCheckpointForLastMigration(fs afero.Fs, migrations []db.Migration, re
 	}
 
 	// Create the checkpoint
-	if err := createCheckpointForMigration(fs, migrations, resultSchema, migrationDir); err != nil {
+	if err := createCheckpointForMigration(fs, migrationsHash, resultSchema, migrationDir); err != nil {
 		return err
 	}
 

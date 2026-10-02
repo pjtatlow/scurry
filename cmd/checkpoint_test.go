@@ -93,6 +93,62 @@ func TestComputeMigrationsHashStripsHeaders(t *testing.T) {
 	}
 }
 
+func TestComputeMigrationsHashIgnoresFormatting(t *testing.T) {
+	// scurry writes uppercase SQL; a formatter (e.g. prettier) may rewrite it before commit.
+	written := "CREATE TABLE users (\n  id INT8 PRIMARY KEY,\n  name STRING NOT NULL DEFAULT 'Anon'\n);\nCREATE INDEX users_name_idx ON users (name);"
+	reformatted := "-- added by hand\ncreate table users (id int8 primary key, name string not null default 'Anon');\n\ncreate index users_name_idx on users (name);\n"
+
+	hash1 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: written}})
+	hash2 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: reformatted}})
+	assert.Equal(t, hash1, hash2, "formatting and comment changes should not affect migrations hash")
+}
+
+func TestComputeMigrationsHashKeepsSemanticDifferences(t *testing.T) {
+	tests := []struct {
+		name string
+		sql1 string
+		sql2 string
+	}{
+		{
+			name: "string literal case",
+			sql1: "ALTER TABLE users ADD COLUMN name STRING DEFAULT 'Anon';",
+			sql2: "ALTER TABLE users ADD COLUMN name STRING DEFAULT 'anon';",
+		},
+		{
+			name: "quoted identifier case",
+			sql1: `CREATE TABLE "Users" (id INT8 PRIMARY KEY);`,
+			sql2: `CREATE TABLE "users" (id INT8 PRIMARY KEY);`,
+		},
+		{
+			name: "statement order",
+			sql1: "CREATE TABLE a (id INT8 PRIMARY KEY); CREATE TABLE b (id INT8 PRIMARY KEY);",
+			sql2: "CREATE TABLE b (id INT8 PRIMARY KEY); CREATE TABLE a (id INT8 PRIMARY KEY);",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash1 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: tt.sql1}})
+			hash2 := computeMigrationsHash([]db.Migration{{Name: "001", SQL: tt.sql2}})
+			assert.NotEqual(t, hash1, hash2)
+		})
+	}
+}
+
+func TestMigrationsPrefixHashesMatchComputeMigrationsHash(t *testing.T) {
+	migrations := []db.Migration{
+		{Name: "001", SQL: "CREATE TABLE a (id INT8 PRIMARY KEY);"},
+		{Name: "002", SQL: "ALTER TABLE a ADD COLUMN b STRING;"},
+		{Name: "003", SQL: "not valid sql"},
+	}
+
+	prefixHashes := migrationsPrefixHashes(migrations)
+	require.Len(t, prefixHashes, len(migrations))
+	for i := range migrations {
+		assert.Equal(t, computeMigrationsHash(migrations[:i+1]), prefixHashes[i])
+	}
+}
+
 func TestComputeChecksumStripsHeaders(t *testing.T) {
 	tests := []struct {
 		name string
@@ -489,7 +545,7 @@ func TestCreateCheckpointForMigration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create checkpoint
-	err = createCheckpointForMigration(fs, migrations, resultSchema, migDir)
+	err = createCheckpointForMigration(fs, computeMigrationsHash(migrations), resultSchema, migDir)
 	require.NoError(t, err)
 
 	// Verify checkpoint was created
@@ -540,7 +596,7 @@ func TestRoundTripCheckpoint(t *testing.T) {
 
 	// Create checkpoint for second migration
 	migDir := filepath.Join(flags.MigrationDir, migrations[1].Name)
-	err = createCheckpointForMigration(fs, migrations, resultSchema, migDir)
+	err = createCheckpointForMigration(fs, computeMigrationsHash(migrations), resultSchema, migDir)
 	require.NoError(t, err)
 
 	// Now find the valid checkpoint
