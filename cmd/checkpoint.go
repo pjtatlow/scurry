@@ -50,14 +50,36 @@ func init() {
 
 // computeMigrationsHash computes SHA-256 of concatenated migration contents
 // migrations must be sorted by name (timestamp order)
-// Headers are stripped before hashing so that header-only edits don't change the hash.
 func computeMigrationsHash(migrations []db.Migration) string {
-	var combined strings.Builder
-	for _, m := range migrations {
-		combined.WriteString(migrationpkg.StripHeader(m.SQL))
+	if len(migrations) == 0 {
+		return fmt.Sprintf("%x", sha256.Sum256(nil))
 	}
-	hash := sha256.Sum256([]byte(combined.String()))
-	return fmt.Sprintf("%x", hash)
+	return migrationsPrefixHashes(migrations)[len(migrations)-1]
+}
+
+// migrationsPrefixHashes returns computeMigrationsHash(migrations[:i+1]) for every i,
+// canonicalizing each migration only once.
+func migrationsPrefixHashes(migrations []db.Migration) []string {
+	h := sha256.New()
+	hashes := make([]string, len(migrations))
+	for i, m := range migrations {
+		h.Write([]byte(canonicalMigrationBody(m.SQL)))
+		hashes[i] = fmt.Sprintf("%x", h.Sum(nil))
+	}
+	return hashes
+}
+
+// canonicalMigrationBody returns the migration body as hashed into checkpoints. The
+// header is stripped and the body is serialized from its AST, so reformatting a
+// migration (e.g. by a SQL formatter) or editing its comments doesn't invalidate
+// every later checkpoint. A body that doesn't parse is hashed as written.
+func canonicalMigrationBody(sql string) string {
+	body := migrationpkg.StripHeader(sql)
+	canonical, err := migrationpkg.CanonicalizeBody(body)
+	if err != nil {
+		return body
+	}
+	return canonical
 }
 
 // computeContentHash computes SHA-256 of content string
@@ -171,9 +193,8 @@ func writeCheckpoint(fs afero.Fs, migrationDir string, content string) error {
 }
 
 // createCheckpointForMigration creates checkpoint.sql for a specific migration
-// migrationsUpTo should be sorted and include all migrations up to and including target
-func createCheckpointForMigration(fs afero.Fs, migrationsUpTo []db.Migration, resultSchema *schema.Schema, targetMigrationDir string) error {
-	migrationsHash := computeMigrationsHash(migrationsUpTo)
+// migrationsHash is computeMigrationsHash of all migrations up to and including target
+func createCheckpointForMigration(fs afero.Fs, migrationsHash string, resultSchema *schema.Schema, targetMigrationDir string) error {
 	content, err := generateCheckpointContent(resultSchema, migrationsHash)
 	if err != nil {
 		return err
@@ -196,6 +217,8 @@ func validateCheckpoint(checkpoint *Checkpoint) error {
 // Returns the checkpoint, its index in allMigrations, and any error
 // Returns nil, -1, nil if no valid checkpoint found
 func findLatestValidCheckpoint(fs afero.Fs, allMigrations []db.Migration) (*Checkpoint, int, error) {
+	prefixHashes := migrationsPrefixHashes(allMigrations)
+
 	// Iterate from newest to oldest migration
 	for i := len(allMigrations) - 1; i >= 0; i-- {
 		migDir := filepath.Join(flags.MigrationDir, allMigrations[i].Name)
@@ -207,17 +230,13 @@ func findLatestValidCheckpoint(fs afero.Fs, allMigrations []db.Migration) (*Chec
 			continue // No checkpoint in this directory
 		}
 
-		// Compute expected migrations hash for this point
-		migrationsUpTo := allMigrations[:i+1]
-		expectedHash := computeMigrationsHash(migrationsUpTo)
-
 		// Validate content hash
 		if err := validateCheckpoint(checkpoint); err != nil {
 			continue
 		}
 
 		// Validate migrations hash
-		if checkpoint.Header.MigrationsHash != expectedHash {
+		if checkpoint.Header.MigrationsHash != prefixHashes[i] {
 			continue
 		}
 
@@ -258,6 +277,8 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 	client.SetDisableAutocommitDDL(false)
 	defer client.Close()
 
+	prefixHashes := migrationsPrefixHashes(migrations)
+
 	// Apply migrations one by one and generate checkpoints
 	for i, mig := range migrations {
 		fmt.Printf("Processing %s (%d/%d)...\n", mig.Name, i+1, len(migrations))
@@ -277,10 +298,9 @@ func runCheckpointRegen(cmd *cobra.Command, args []string) error {
 		}
 
 		// Generate checkpoint for this migration
-		migrationsUpTo := migrations[:i+1]
 		migDir := filepath.Join(flags.MigrationDir, mig.Name)
 
-		err = createCheckpointForMigration(fs, migrationsUpTo, currentSchema, migDir)
+		err = createCheckpointForMigration(fs, prefixHashes[i], currentSchema, migDir)
 		if err != nil {
 			return fmt.Errorf("failed to create checkpoint for %s: %w", mig.Name, err)
 		}
