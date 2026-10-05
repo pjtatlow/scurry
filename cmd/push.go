@@ -270,7 +270,13 @@ func executePush(ctx context.Context, opts PushOptions, errCtx *ErrorContext) (*
 	fmt.Println()
 	fmt.Println(ui.Info("⟳ Applying migrations..."))
 
-	if err := opts.DbClient.ExecuteBulkDDL(ctx, statements...); err != nil {
+	// An empty database has no production transaction boundaries to catch, so
+	// like a squash migration it loads in bulk transactions, several times faster.
+	client := opts.DbClient
+	if remoteSchema.IsEmpty() {
+		client = opts.DbClient.WithAutocommitDDLDisabled()
+	}
+	if err := client.ExecuteBulkDDL(ctx, statements...); err != nil {
 		fmt.Println()
 		fmt.Println(ui.Warning("⚠ Bulk apply failed, retrying statements one-by-one to identify the failure..."))
 		fmt.Println()

@@ -31,6 +31,15 @@ func (c *Client) SetDisableAutocommitDDL(disable bool) {
 	c.disableAutocommitDDL = disable
 }
 
+// WithAutocommitDDLDisabled returns a copy of the client whose ExecuteBulkDDL
+// keeps multiple DDL statements in one transaction. The copy shares the
+// connection pool, so close only the original.
+func (c *Client) WithAutocommitDDLDisabled() *Client {
+	clone := *c
+	clone.disableAutocommitDDL = true
+	return &clone
+}
+
 // Connect establishes a connection to the CockroachDB database
 func Connect(ctx context.Context, dbURL string) (*Client, error) {
 	parsedUrl, err := url.Parse(dbURL)

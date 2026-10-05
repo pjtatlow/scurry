@@ -44,6 +44,13 @@ func (o *ObjectSchema[T]) ResolvedName() string {
 	return fmt.Sprintf("%s.%s", o.Schema, o.Name)
 }
 
+// IsEmpty reports whether the schema holds no objects. Schemas themselves do
+// not count, since every database starts with public.
+func (s *Schema) IsEmpty() bool {
+	return len(s.Routines) == 0 && len(s.Sequences) == 0 && len(s.Tables) == 0 &&
+		len(s.Types) == 0 && len(s.Views) == 0
+}
+
 func NewSchema(statements ...tree.Statement) *Schema {
 	schema := &Schema{
 		Tables:             make([]ObjectSchema[*tree.CreateTable], 0),

@@ -415,3 +415,27 @@ func TestParseSQL(t *testing.T) {
 		})
 	}
 }
+
+func TestSchemaIsEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{name: "no statements", sql: "", want: true},
+		{name: "only schemas", sql: "CREATE SCHEMA IF NOT EXISTS public; CREATE SCHEMA app;", want: true},
+		{name: "a table", sql: "CREATE TABLE users (id INT PRIMARY KEY);", want: false},
+		{name: "a type", sql: "CREATE TYPE status AS ENUM ('active');", want: false},
+		{name: "a sequence", sql: "CREATE SEQUENCE ids;", want: false},
+		{name: "a view", sql: "CREATE VIEW one AS SELECT 1;", want: false},
+		{name: "a routine", sql: "CREATE FUNCTION one() RETURNS INT LANGUAGE SQL AS 'SELECT 1';", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statements, err := ParseSQL(tt.sql)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, NewSchema(statements...).IsEmpty())
+		})
+	}
+}
