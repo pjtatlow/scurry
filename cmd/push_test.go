@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1846,4 +1847,61 @@ func TestGenerateErrorReportContent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPushIntoEmptyDatabaseWithProductionSettings covers the bulk load of an
+// empty database on a client with production defaults: autocommit_before_ddl
+// on and, where supported, every new table created schema_locked.
+func TestPushIntoEmptyDatabaseWithProductionSettings(t *testing.T) {
+	ctx := context.Background()
+	shadow, err := db.GetShadowDB(ctx)
+	require.NoError(t, err)
+	defer shadow.Close()
+
+	var schemaLocked string
+	schemaLockedSupported := shadow.GetDB().QueryRowContext(ctx, "SHOW create_table_with_schema_locked").Scan(&schemaLocked) == nil
+
+	targetURL, err := url.Parse(shadow.ConnectionString())
+	require.NoError(t, err)
+	targetURL.Path = "/push_empty_production"
+	if schemaLockedSupported {
+		query := targetURL.Query()
+		query.Set("options", "-ccreate_table_with_schema_locked=true")
+		targetURL.RawQuery = query.Encode()
+	}
+	client, err := db.Connect(ctx, targetURL.String())
+	require.NoError(t, err)
+	defer client.Close()
+
+	fs := afero.NewMemMapFs()
+	files := map[string]string{
+		"types/status.sql": `CREATE TYPE status AS ENUM ('active', 'archived');`,
+		"tables/users.sql": `
+			CREATE TABLE users (
+				id INT PRIMARY KEY,
+				email TEXT NOT NULL,
+				status status NOT NULL DEFAULT 'active',
+				INDEX users_email_idx (email)
+			);
+		`,
+		"tables/posts.sql": `
+			CREATE TABLE posts (
+				id INT PRIMARY KEY,
+				author_id INT NOT NULL REFERENCES users (id),
+				INDEX posts_author_idx (author_id)
+			);
+		`,
+	}
+	for path, content := range files {
+		require.NoError(t, afero.WriteFile(fs, filepath.Join("/schema", path), []byte(content), 0644))
+	}
+	opts := PushOptions{Fs: fs, DefinitionDirs: []string{"/schema"}, DbClient: client, Force: true}
+
+	result, err := executePush(ctx, opts, &ErrorContext{})
+	require.NoError(t, err)
+	assert.True(t, result.HasChanges)
+
+	result, err = executePush(ctx, opts, &ErrorContext{})
+	require.NoError(t, err)
+	assert.False(t, result.HasChanges, "the database should match the definitions: %v", result.Statements)
 }
